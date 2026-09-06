@@ -1,0 +1,129 @@
+# CLI
+
+One binary, three subcommands.
+
+```
+viter train  <corpus_dir> -o model.viter [flags]
+viter align  <corpus_dir|audio.wav> <model.viter> -o out_dir [flags]
+viter serve  <dir> [flags]
+```
+
+## `viter train`
+
+Trains an acoustic model from a corpus. Runs mono → tri → LDA+MLLT → SAT by default, then
+aligns the full corpus with the final model.
+
+| flag | default | meaning |
+|---|---|---|
+| `<corpus_dir>` | required | corpus root, scanned recursively — see [CORPUS-FORMAT.md](CORPUS-FORMAT.md) |
+| `-o, --output <model.viter>` | required | where to write the trained model |
+| `--dict <dict.txt>` | none | pronunciation dictionary. Omit for phoneme-string mode |
+| `--out-textgrids <DIR>` | none | also write TextGrids for the final training alignments |
+| `--config <train.toml>` | none | `TrainConfig` overrides; unset fields keep MFA defaults |
+| `--no-lda` | off | stop after the triphone stage (implies `--no-sat`) |
+| `--no-sat` | off | stop after LDA+MLLT; no fMLLR, no `am_si` in the model |
+| `--cpu` | off | force the CPU scoring path; skip GPU adapter probing |
+| `--seed <N>` | from config | RNG seed for subset shuffling, Gaussian splitting, flat start |
+
+Dropping stages trades accuracy for time. `--no-sat` is a reasonable choice for a
+single-speaker corpus, where per-speaker adaptation has little to adapt to.
+
+```bash
+# Full recipe with a dictionary, on GPU
+viter train ./corpus -o english.viter --dict ./english_us_arpa.dict
+
+# Phoneme-string corpus, mono+tri only, deterministic
+viter train ./phones_corpus -o quick.viter --no-lda --seed 42
+
+# Train and immediately get TextGrids for the training data
+viter train ./corpus -o m.viter --dict d.txt --out-textgrids ./aligned
+```
+
+## `viter align`
+
+Aligns audio against an existing model. The first argument is either a corpus directory or a
+single audio file.
+
+| flag | default | meaning |
+|---|---|---|
+| `<corpus_dir\|audio.wav>` | required | a corpus to scan, or one audio file |
+| `<model.viter>` | required | a model from `viter train` |
+| `-o, --output <out_dir>` | required | where TextGrids (or CTMs) are written |
+| `--dict <dict.txt>` | none | dictionary; must match the one used for training |
+| `--text "..."` | none | inline transcript for the single-file form, instead of a `.txt`/`.lab` |
+| `--beam <N>` | 10 | Viterbi beam |
+| `--retry-beam <N>` | 40 | wider beam used only for utterances that fail at `--beam` |
+| `--cpu` | off | force the CPU scoring path |
+| `--ctm` | off | write Kaldi/MFA CTM (`utt 1 start dur label`) instead of TextGrids |
+
+Output mirrors the corpus layout: an utterance at `corpus/spk/utt.wav` becomes
+`out_dir/spk/utt.TextGrid`, with `words` and `phones` interval tiers. If the model was trained
+with SAT (`am_si` present), alignment automatically runs two passes — speaker-independent
+align, per-speaker fMLLR estimation, adapted re-align.
+
+Raising `--beam` fixes utterances that fail to align, at a cost in time; a widespread failure
+usually means a transcript/audio mismatch rather than too narrow a beam.
+
+```bash
+# Align a corpus
+viter align ./corpus english.viter -o ./aligned --dict ./english_us_arpa.dict
+
+# One file with an inline transcript
+viter align talk.wav english.viter -o ./out --dict d.txt --text "hello world"
+
+# CTM output, wider beam for a noisy corpus
+viter align ./corpus m.viter -o ./out --dict d.txt --ctm --beam 20 --retry-beam 80
+```
+
+## `viter serve`
+
+Starts the web viewer over a directory of audio and TextGrids — normally an `align` output
+directory sitting next to the audio, or the audio directory itself.
+
+| flag | default | meaning |
+|---|---|---|
+| `<dir>` | required | directory scanned recursively for `x.TextGrid` paired with `x.wav\|flac\|mp3` |
+| `--port <N>` | 7878 | listen port |
+| `--no-open` | off | do not open a browser automatically |
+
+```bash
+viter serve ./aligned
+viter serve ./aligned --port 9000 --no-open
+```
+
+See [VIEWER.md](VIEWER.md) for the API and keyboard shortcuts.
+
+## Summary output
+
+`train` and `align` print a short summary when they finish:
+
+```
+utterances     4821
+aligned        4809
+failed           12
+oov words        37  (top: THE_QUICK 9, BROWN 5, ...)
+device         gpu (Vulkan, NVIDIA GB10)
+elapsed        18m 42s
+RTF            0.031
+```
+
+- **failed** — utterances that produced no path even at `--retry-beam`. These get no output
+  file; the ids are logged at warn level.
+- **RTF** — real-time factor, wall-clock seconds per second of audio. Below 1.0 is faster than
+  real time.
+- **oov words** — dictionary mode only; see [CORPUS-FORMAT.md](CORPUS-FORMAT.md#oov-handling).
+
+Progress during a run is one `indicatif` bar per stage (`mono iter 12/40`), plus a bar for the
+initial feature extraction. Detailed logging goes through `tracing`; raise it with
+`RUST_LOG=debug`.
+
+## Exit codes
+
+| code | meaning |
+|---|---|
+| 0 | success — including a run where some utterances failed to align, as long as at least one succeeded |
+| 1 | usage error: bad flags, missing file, unreadable corpus, no utterances found |
+| 2 | data error: dictionary/model phone mismatch (`io::remap` failure), unreadable model, corrupt `.viter` |
+| 3 | run failure: every utterance failed to align, or a training stage could not complete |
+
+Failures are reported once, with the offending path or symbol, not as a stack trace.

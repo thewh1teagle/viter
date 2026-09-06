@@ -1,0 +1,12 @@
+/target
+data/
+/plans/mfa
+/plans/kalpy
+/plans/kaldi
+/plans/openfst
+/plans/praatio
+/web/node_modules
+/web/dist
+*.viter
+/data
+/plans

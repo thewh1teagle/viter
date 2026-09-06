@@ -1,0 +1,103 @@
+[workspace]
+members = ["crates/*"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/thewh1teagle/viter"
+
+[workspace.dependencies]
+viter-kaldi = { path = "crates/kaldi" }
+viter-train = { path = "crates/train" }
+viter-io = { path = "crates/io" }
+viter-serve = { path = "crates/serve" }
+
+# audio
+symphonia = { version = "0.6", default-features = false, features = ["wav", "flac", "mp3", "pcm", "adpcm"] }
+rubato = "5"
+hound = "3.5"
+
+# numerics
+realfft = "3.5"
+rustfft = "6.4"
+faer = "0.24"
+ndarray = { version = "0.17", features = ["rayon", "serde"] }
+rayon = "1.12"
+rand = "0.10"
+rand_xoshiro = "0.8"
+
+# gpu
+wgpu = "30"
+bytemuck = { version = "1", features = ["derive"] }
+pollster = "0.4"
+
+# serialization / model files
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+postcard = { version = "1.1", features = ["use-std"] }
+encoding_rs = "0.8"
+
+# server
+axum = "0.8"
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["cors"] }
+rust-embed = "8"
+mime_guess = "2"
+bytes = "1"
+open = "5"
+
+# cli / logging
+clap = { version = "4.6", features = ["derive"] }
+indicatif = { version = "0.18", features = ["rayon"] }
+console = "0.15"
+owo-colors = "4"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+thiserror = "2"
+walkdir = "2"
+
+[package]
+name = "viter"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Rusty forced aligner. Train, align, serve. One binary."
+
+[dependencies]
+viter-kaldi.workspace = true
+viter-train.workspace = true
+viter-io.workspace = true
+viter-serve.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+indicatif.workspace = true
+console.workspace = true
+owo-colors.workspace = true
+tokio.workspace = true
+
+# `cargo binstall viter` pulls the archives that .github/workflows/release.yml attaches.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-v{ version }-{ target }{ archive-suffix }"
+bin-dir = "{ name }-v{ version }-{ target }/{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+opt-level = 3
+panic = "abort"
+strip = true
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

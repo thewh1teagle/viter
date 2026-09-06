@@ -1,0 +1,21 @@
+[package]
+name = "viter-train"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Acoustic model training pipeline: mono -> tri -> lda+mllt -> sat"
+
+[dependencies]
+viter-kaldi.workspace = true
+viter-io.workspace = true
+ndarray.workspace = true
+rayon.workspace = true
+rand.workspace = true
+rand_xoshiro.workspace = true
+serde.workspace = true
+indicatif.workspace = true
+console.workspace = true
+owo-colors.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true

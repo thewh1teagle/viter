@@ -1,0 +1,283 @@
+//! Port of `fst::EqualAlign` (`plans/kaldi/src/fstext/fstext-utils-inl.h:857`), used for the
+//! monophone flat start (`gmm_align_equal`).
+//!
+//! A path is drawn at random from the graph, ignoring self-loops; then self-loops are inserted
+//! along it, spread as evenly as possible, until the path has exactly `num_frames` emitting arcs.
+
+use crate::hmm::{Graph, TransitionModel, NO_WORD};
+use crate::types::{Alignment, TransitionId, WordId};
+use rand::{Rng, RngExt};
+
+/// Kaldi's `num_retries` default in `EqualAlign`.
+const NUM_RETRIES: usize = 10;
+
+/// Index of a self-loop arc with a non-epsilon input label out of `state`, if any.
+/// Kaldi `FindSelfLoopWithILabel`.
+fn find_self_loop(graph: &Graph, state: u32) -> Option<usize> {
+    graph.states[state as usize]
+        .arcs
+        .iter()
+        .position(|a| a.next == state && a.tid != 0)
+}
+
+/// Kaldi `EqualAlign`: build an alignment of exactly `num_frames` frames by choosing a random
+/// path through the graph and padding it with self-loops.
+///
+/// Returns `None` if even the shortest randomly drawn path is longer than `num_frames`, or if the
+/// path has no self-loops to lengthen it with.
+pub fn equal_align(
+    graph: &Graph,
+    tm: &TransitionModel,
+    num_frames: usize,
+    rng: &mut impl Rng,
+) -> Option<Alignment> {
+    if graph.states.is_empty() {
+        tracing::warn!("EqualAlign: empty graph");
+        return None;
+    }
+
+    // First select a path through the graph. `path` holds the states visited; `arc_offsets[i]`
+    // is the arc index taken out of `path[i]`.
+    let mut path: Vec<u32> = Vec::new();
+    let mut arc_offsets: Vec<usize> = Vec::new();
+    let mut num_ilabels = 0usize;
+    let mut attempted: Vec<usize> = Vec::new();
+
+    let mut ended_final = false;
+    for _ in 0..NUM_RETRIES {
+        num_ilabels = 0;
+        arc_offsets.clear();
+        path.clear();
+        path.push(0);
+
+        // Guard against pathological graphs: a random walk that keeps failing to terminate.
+        let mut steps = 0usize;
+        let max_steps = 100 * (num_frames + graph.num_states() + 1);
+        loop {
+            let s = *path.last().unwrap();
+            let num_arcs = graph.states[s as usize].arcs.len();
+            let mut num_arcs_tot = num_arcs;
+            if graph.is_final(s) {
+                num_arcs_tot += 1;
+            }
+            if num_arcs_tot == 0 {
+                // Dead end with no final-prob: this path cannot be completed.
+                break;
+            }
+            steps += 1;
+            if steps > max_steps {
+                break;
+            }
+            let offset = rng.random_range(0..num_arcs_tot);
+            if offset < num_arcs {
+                let arc = graph.states[s as usize].arcs[offset];
+                if arc.next == s {
+                    continue; // don't take this self-loop arc
+                }
+                arc_offsets.push(offset);
+                path.push(arc.next);
+                if arc.tid != 0 {
+                    num_ilabels += 1;
+                }
+            } else {
+                break; // chose the final-prob
+            }
+        }
+        attempted.push(num_ilabels);
+
+        // Kaldi retries while the drawn path is too long. A path that ran into a dead end rather
+        // than a final state is unusable, so it is retried too.
+        ended_final = path.last().is_some_and(|&s| graph.is_final(s));
+        if ended_final && num_ilabels <= num_frames {
+            break;
+        }
+    }
+
+    if !ended_final {
+        tracing::warn!("EqualAlign: could not draw a path reaching a final state");
+        return None;
+    }
+    if num_ilabels > num_frames {
+        tracing::warn!(
+            ?attempted,
+            num_frames,
+            "EqualAlign: utterance has too few frames to align"
+        );
+        return None;
+    }
+
+    let self_loop_offsets: Vec<Option<usize>> =
+        path.iter().map(|&s| find_self_loop(graph, s)).collect();
+    let num_self_loops = self_loop_offsets.iter().filter(|o| o.is_some()).count();
+
+    if num_self_loops == 0 && num_ilabels < num_frames {
+        tracing::warn!("EqualAlign: no self-loops on the chosen path; cannot match length");
+        return None;
+    }
+
+    let num_extra = num_frames - num_ilabels;
+    let min_num_loops = if num_extra != 0 && num_self_loops != 0 {
+        num_extra / num_self_loops
+    } else {
+        0
+    };
+    let num_with_one_more = num_extra - min_num_loops * num_self_loops;
+
+    let mut tids: Vec<TransitionId> = Vec::with_capacity(num_frames);
+    let mut words: Vec<WordId> = Vec::new();
+    let mut prons: Vec<u32> = Vec::new();
+    let mut counter = 0usize;
+    let mut total_cost = 0.0f64;
+
+    for (i, &state) in path.iter().enumerate() {
+        // First, add any self-loops that are needed here.
+        if let Some(off) = self_loop_offsets[i] {
+            let num_loops = min_num_loops + usize::from(counter < num_with_one_more);
+            counter += 1;
+            let arc = graph.states[state as usize].arcs[off];
+            for _ in 0..num_loops {
+                tids.push(arc.tid);
+                if arc.word != NO_WORD {
+                    words.push(arc.word);
+                    prons.push(arc.pron);
+                }
+                total_cost += arc.cost as f64;
+            }
+        }
+        if i + 1 < path.len() {
+            let arc = graph.states[state as usize].arcs[arc_offsets[i]];
+            debug_assert_eq!(arc.next, path[i + 1]);
+            if arc.tid != 0 {
+                tids.push(arc.tid);
+            }
+            if arc.word != NO_WORD {
+                words.push(arc.word);
+                prons.push(arc.pron);
+            }
+            total_cost += arc.cost as f64;
+        } else {
+            total_cost += graph.final_cost(state).unwrap_or(0.0) as f64;
+        }
+    }
+
+    if tids.len() != num_frames {
+        tracing::warn!(
+            got = tids.len(),
+            want = num_frames,
+            "EqualAlign: produced the wrong number of frames"
+        );
+        return None;
+    }
+    debug_assert!(tids.iter().all(|&t| (t as usize) <= tm.num_transition_ids()));
+
+    Some(Alignment {
+        utt: String::new(),
+        tids,
+        words,
+        prons,
+        // Graph cost only; a flat-start alignment has no acoustic score.
+        loglike: -total_cost as f32,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+
+/// `build_graph` input for words with a single plain pronunciation each.
+use crate::types::{PhoneId, Pronunciation};
+
+fn plain(words: &[&[PhoneId]]) -> Vec<Vec<Pronunciation>> {
+    words
+        .iter()
+        .map(|p| vec![Pronunciation::plain(p.to_vec())])
+        .collect()
+}
+    use super::*;
+    use crate::hmm::{build_graph, ContextDependency, GraphOptions, HmmTopology};
+    use rand::SeedableRng;
+    use rand_xoshiro::Xoshiro256PlusPlus;
+
+    fn setup() -> (TransitionModel, ContextDependency, GraphOptions) {
+        let topo = HmmTopology::mfa_default(&[1], &[2, 3], 5, 3);
+        let sets: Vec<Vec<PhoneId>> = vec![vec![1], vec![2], vec![3]];
+        let t = topo.clone();
+        let ctx = ContextDependency::monophone_shared(&sets, &move |p| t.num_pdf_classes(p));
+        let tm = TransitionModel::new(&ctx, &topo);
+        let opts = GraphOptions {
+            silence_phone: 1,
+            silence_prob: 0.0,
+            initial_silence_prob: 0.0,
+            ..Default::default()
+        };
+        (tm, ctx, opts)
+    }
+
+    #[test]
+    fn produces_exactly_num_frames() {
+        let (tm, ctx, gopts) = setup();
+        let g = build_graph(&plain(&[&[2, 3]]), &tm, &ctx, &gopts);
+        let mut rng = Xoshiro256PlusPlus::seed_from_u64(7);
+        for frames in [6usize, 10, 25, 100] {
+            let ali = equal_align(&g, &tm, frames, &mut rng)
+                .unwrap_or_else(|| panic!("equal_align failed for {frames} frames"));
+            assert_eq!(ali.tids.len(), frames);
+        }
+    }
+
+    #[test]
+    fn output_splits_into_the_right_phones() {
+        let (tm, ctx, gopts) = setup();
+        let g = build_graph(&plain(&[&[2, 3]]), &tm, &ctx, &gopts);
+        let mut rng = Xoshiro256PlusPlus::seed_from_u64(11);
+        let ali = equal_align(&g, &tm, 20, &mut rng).unwrap();
+        let runs = crate::hmm::split_to_phones(&tm, &ali.tids);
+        assert_eq!(runs.len(), 2);
+        assert_eq!(tm.transition_id_to_phone(runs[0][0]), 2);
+        assert_eq!(tm.transition_id_to_phone(runs[1][0]), 3);
+    }
+
+    #[test]
+    fn lengths_are_roughly_equal() {
+        let (tm, ctx, gopts) = setup();
+        let g = build_graph(&plain(&[&[2, 3]]), &tm, &ctx, &gopts);
+        let mut rng = Xoshiro256PlusPlus::seed_from_u64(3);
+        let ali = equal_align(&g, &tm, 60, &mut rng).unwrap();
+        let runs = crate::hmm::split_to_phones(&tm, &ali.tids);
+        // Six emitting states share 60 frames; each run holds three states, so each phone should
+        // get roughly half.
+        for r in &runs {
+            assert!(
+                r.len() >= 20 && r.len() <= 40,
+                "phone run length {} is far from equal",
+                r.len()
+            );
+        }
+    }
+
+    #[test]
+    fn too_few_frames_returns_none() {
+        let (tm, ctx, gopts) = setup();
+        let g = build_graph(&plain(&[&[2, 3]]), &tm, &ctx, &gopts);
+        let mut rng = Xoshiro256PlusPlus::seed_from_u64(5);
+        // Two Bakis phones need six emitting arcs.
+        assert!(equal_align(&g, &tm, 3, &mut rng).is_none());
+    }
+
+    #[test]
+    fn deterministic_for_a_fixed_seed() {
+        let (tm, ctx, gopts) = setup();
+        let g = build_graph(&plain(&[&[2, 3]]), &tm, &ctx, &gopts);
+        let a = equal_align(&g, &tm, 15, &mut Xoshiro256PlusPlus::seed_from_u64(42)).unwrap();
+        let b = equal_align(&g, &tm, 15, &mut Xoshiro256PlusPlus::seed_from_u64(42)).unwrap();
+        assert_eq!(a.tids, b.tids);
+    }
+
+    #[test]
+    fn word_labels_present() {
+        let (tm, ctx, gopts) = setup();
+        let g = build_graph(&plain(&[&[2], &[3]]), &tm, &ctx, &gopts);
+        let mut rng = Xoshiro256PlusPlus::seed_from_u64(9);
+        let ali = equal_align(&g, &tm, 18, &mut rng).unwrap();
+        assert_eq!(ali.words, vec![0, 1]);
+    }
+}

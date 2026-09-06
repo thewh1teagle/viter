@@ -1,0 +1,103 @@
+# viter tasks. Run `chore list` to see them.
+require 1.7.0
+
+corpus=data/lj200
+dict=data/dict/cmudict.dict
+model=data/lj200.viter
+out=data/lj200-aligned
+
+# Build the web viewer into web/dist (embedded into the binary).
+task web {
+    cd web
+    exists node_modules || pnpm install
+    pnpm build
+}
+
+# Build the release binary (builds the web viewer first).
+task build {
+    web
+    cargo build --release
+    echo "built target/release/viter"
+}
+
+# Fast type check of the workspace, no web build.
+task check {
+    exists web/dist || web
+    cargo check --workspace --all-targets
+}
+
+# Run the Rust unit tests.
+task test {
+    exists web/dist || web
+    cargo test --workspace
+}
+
+# Web dev server with /api proxied to a running `viter serve`.
+task web-dev {
+    cd web
+    exists node_modules || pnpm install
+    pnpm dev
+}
+
+# Train on the LJSpeech 200 subset: train [corpus] [dict] [model].
+task train corpus=$corpus dict=$dict model=$model {
+    build
+    target/release/viter train $1 --dict $2 -o $3
+}
+
+# Align the subset with the trained model: align [corpus] [model] [out].
+task align corpus=$corpus model=$model out=$out {
+    build
+    target/release/viter align $1 $2 --dict $dict -o $3
+}
+
+# Serve real MFA TextGrids + wavs from data/demo in the browser (no training needed).
+task demo-serve {
+    build
+    target/release/viter serve data/demo
+}
+
+# Serve viter vs MFA side by side (tiers: words, phones, mfa words, mfa phones) from data/demo-compare.
+task compare-serve {
+    build
+    target/release/viter serve data/demo-compare --port 7879
+}
+
+# Serve the aligned output in the browser: serve [dir].
+task serve dir=$out {
+    build
+    target/release/viter serve $1
+}
+
+# Train, align, serve on the subset in one go.
+task demo {
+    train
+    align
+    serve
+}
+
+# Parity check against MFA (uv script; installs MFA into its own env).
+task parity {
+    uv run plans/parity/parity_001.py
+}
+
+# Format everything.
+task format {
+    cargo fmt --all
+    cd web
+    pnpm exec prettier --write src 2>/dev/null || echo "prettier not installed, skipped"
+}
+
+# Lint the way CI does.
+task lint {
+    exists web/dist || web
+    cargo fmt --all -- --check
+    cargo clippy --workspace --all-targets -- -D warnings
+    cd web
+    pnpm exec tsc -b
+}
+
+# Delete build output.
+task clean {
+    remove target web/dist
+}
