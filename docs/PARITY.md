@@ -11,13 +11,17 @@ and machine, with `plans/parity/parity_001.py` (boundary diff), `parity_002_brea
 (silence-adjacent vs internal), `parity_003_silences.py` (silence intervals) and
 `parity_004_feats.py` (features vs Kaldi binaries).
 
-| | viter vs MFA | viter vs viter (other seed) |
+| | viter vs MFA | viter vs viter (other seed, before 2026-09-07) |
 |---|---|---|
 | phone label sequences | identical on all 13,088 files | identical |
-| phone boundaries within 10 ms | 83% | 77% |
-| within 20 ms | 96% | 95% |
-| median difference | 0 ms | 0 ms |
-| silence intervals | 55.9k (MFA 59.9k) | |
+| phone boundaries within 10 ms | 87% (83% before 2026-09-07) | 77% |
+| within 20 ms | 97% (96%) | 95% |
+| median / p95 difference | 0 ms / 10 ms (20 ms) | 0 ms |
+| silence intervals | 56.3k (MFA 59.9k) | |
+
+The 2026-09-07 training changes (graphs re-costed from the transition model each
+realignment, deterministic flat start; [TRAINING.md](TRAINING.md)) moved every row towards
+MFA; the earlier numbers are kept for the record.
 
 MFA's TextGrids are as close to viter's as one viter run is to another: parity. The
 configuration is MFA's own for this corpus, `--no-position-dependent` with LDA and the

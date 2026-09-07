@@ -14,7 +14,7 @@
 | Setup | conda, Kaldi, Python | one static binary |
 | Train on LJSpeech, 23.9 h, same recipe | 42 min | **10 min** |
 | Same, short schedule | — | **2 min** |
-| Agreement with MFA on LJSpeech, phone boundaries within 20 ms | reference | **95.7%** |
+| Agreement with MFA on LJSpeech, phone boundaries within 20 ms | reference | **97.4%** |
 | Phone boundaries within 25 ms of TIMIT hand labels, trained on TIMIT | 91.1% (MFA 3.4.0, same corpus; 85.3% [published](docs/TIMIT.md)) | **89.9%** |
 | Same, within 10 ms | 57.9% | **66.5%** |
 | Output | Praat TextGrids | the same TextGrids |
