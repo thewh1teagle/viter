@@ -118,6 +118,37 @@ viter serve ./aligned --port 9000 --no-open
 
 See [VIEWER.md](VIEWER.md) for the API and keyboard shortcuts.
 
+## Large corpora
+
+Features are held in memory during a run: about 0.2 GB per hour of audio at peak, so
+a 24 h corpus peaks near 8 GB and a 128 GB machine handles roughly 400 h in one call.
+Beyond that, split the work; nothing about the model changes.
+
+**Training** does not need the whole corpus. MFA's schedule (and viter's) trains on
+subsets of 10,000 to 50,000 utterances, so train on a representative slice and align
+the rest with the model:
+
+```
+viter train corpus/part-00 --dict dict.txt -o model.viter   # 20-50k utterances is plenty
+```
+
+**Aligning** is linear in audio and embarrassingly parallel across chunks. Any folder
+split works because every utterance is aligned independently:
+
+```
+for part in corpus/part-*; do
+  viter align "$part" model.viter --dict dict.txt -o "out/$(basename "$part")"
+done
+```
+
+Speaker adaptation (fMLLR) is estimated per speaker within one `align` call, so keep a
+speaker's files in the same chunk. A chunk of 50 to 100 hours keeps peak memory in
+the low tens of GB; throughput is about 24 h of audio per 3 minutes on a GPU, so 1000 h
+takes on the order of two hours regardless of how it is chunked.
+
+A disk-backed feature store that removes the need to chunk is tracked in
+[issue #6](https://github.com/thewh1teagle/viter/issues/6).
+
 ## Summary output
 
 `train` and `align` print a short summary when they finish:
