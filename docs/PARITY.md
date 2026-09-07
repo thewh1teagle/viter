@@ -4,6 +4,26 @@ Parity with Kaldi/MFA numerics is the definition of correct. viter is not "an al
 inspired by MFA" — it is meant to produce the same numbers, and every stage is checkable
 against the reference implementation sitting in `plans/`.
 
+## Current status (2026-09-07, LJSpeech)
+
+Measured against the TextGrids of a real MFA 3.4 `train` run on the same corpus, dictionary
+and machine, with `plans/parity/parity_001.py` (boundary diff), `parity_002_breakdown.py`
+(silence-adjacent vs internal) and `parity_003_silences.py` (silence intervals).
+
+| | viter vs MFA | viter vs viter (other seed) |
+|---|---|---|
+| phone label sequences | identical on all 13,087 files | identical |
+| phone boundaries within 10 ms | 38% | 77% |
+| within 20 ms | 69% | 95% |
+| within 30 ms | 94% | 99% |
+
+Best configuration is MFA's actual one from its `meta.json`: `--no-position-dependent`
+and `--no-lda` (SAT on delta features). The remaining gap is concentrated next to silences:
+MFA opens about 13,000 short pauses (30 to 60 ms) between words that viter does not.
+Phone-internal boundaries agree at 87% within two frames. Dictionary and global silence
+probabilities, silence boosting and beam width have all been tested and do not move it.
+Tracking issue: https://github.com/thewh1teagle/viter/issues/5.
+
 ## Method
 
 MFA and kalpy are Python wrappers over Kaldi. That makes the reference runnable: a `uv`
@@ -12,7 +32,9 @@ dumps intermediate tensors to `.npy`, and compares them against the same tensors
 viter. Per `AGENTS.md`, validation scripts are standalone `uv` scripts at
 `plans/<name>/<name>_NNN.py` with a matching `.md` describing what they check.
 
-The first one is `plans/parity/parity_001.py` (with `parity_001.md`). Shape:
+The whole-pipeline check that exists today is `plans/parity/parity_001.py`: it needs no MFA
+install, it diffs two TextGrid folders (viter output vs MFA output) boundary by boundary.
+Per-stage tensor checks against kalpy are the planned next level. Shape:
 
 ```python
 # /// script
