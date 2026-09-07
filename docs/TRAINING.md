@@ -111,9 +111,16 @@ Feature pipeline switches to spliced MFCC: `splice(3, 3)` on 13-dim CMVN'd MFCC 
 
 ## Final pass
 
-The full corpus (not a subset) is aligned with the final model — two passes when `am_si` is
-present — and those alignments are returned in `Trained.alignments`, written as TextGrids if
-`--out-textgrids` was given.
+With `--out-textgrids`, the full corpus (not a subset) is aligned with the final model —
+two passes when `am_si` is present — and those alignments are written as TextGrids.
+Without that flag the CLI skips the pass and its alignment counts; `viter align` can
+produce the TextGrids later. Training stages and pronunciation-probability estimation
+still run their own required alignment passes.
+
+Rust callers can use `pipeline::train_with` with `TrainOptions { final_alignment: false }`
+(the default) to return only the model, with an empty `Trained.alignments`. The existing
+`pipeline::train` entry point keeps its final pass and returns the successful alignments.
+Python `viter.train` skips the final pass because it returns only a `Model`.
 
 ## Pronunciation probabilities
 

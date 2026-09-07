@@ -146,8 +146,16 @@ pub fn run(args: TrainArgs) -> anyhow::Result<()> {
     let audio_seconds = super::corpus_audio_seconds(&corpus.utts);
 
     // --- train ------------------------------------------------------------
-    let trained = viter_train::pipeline::train(&corpus, &cfg, &device, args.work_dir.as_deref())
-        .context("training failed")?;
+    let trained = viter_train::pipeline::train_with(
+        &corpus,
+        &cfg,
+        &device,
+        args.work_dir.as_deref(),
+        &viter_train::pipeline::TrainOptions {
+            final_alignment: args.out_textgrids.is_some(),
+        },
+    )
+    .context("training failed")?;
 
     // --- save -------------------------------------------------------------
     ensure_parent(&args.out)?;
@@ -164,16 +172,17 @@ pub fn run(args: TrainArgs) -> anyhow::Result<()> {
 
     // --- summary ----------------------------------------------------------
     let elapsed = started.elapsed();
-    let aligned = trained.alignments.len();
-    let failed = corpus.utts.len().saturating_sub(aligned);
-
     header("Summary");
     field("utterances", corpus.utts.len());
-    field("aligned", aligned);
-    if failed > 0 {
-        field("failed", failed.to_string().yellow().to_string());
-    } else {
-        field("failed", 0);
+    if args.out_textgrids.is_some() {
+        let aligned = trained.alignments.len();
+        let failed = corpus.utts.len().saturating_sub(aligned);
+        field("aligned", aligned);
+        if failed > 0 {
+            field("failed", failed.to_string().yellow().to_string());
+        } else {
+            field("failed", 0);
+        }
     }
     field(
         "audio",
@@ -186,6 +195,11 @@ pub fn run(args: TrainArgs) -> anyhow::Result<()> {
     }
     if let Some(dir) = &args.out_textgrids {
         field("TextGrids", format!("{written} -> {}", dir.display()));
+    } else {
+        field(
+            "TextGrids",
+            "run `viter align` to align the training corpus",
+        );
     }
     success(&format!("model written to {}", args.out.display().bold()));
     Ok(())

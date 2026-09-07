@@ -10,15 +10,16 @@ viter serve  <dir> [flags]
 
 ## `viter train`
 
-Trains an acoustic model from a corpus. Runs mono → tri → LDA+MLLT → SAT by default, then
-aligns the full corpus with the final model.
+Trains an acoustic model from a corpus. Runs mono → tri → LDA+MLLT → SAT by default.
+The final full-corpus alignment runs only with `--out-textgrids`; otherwise training
+ends after the model is trained. Run `viter align` later to produce training TextGrids.
 
 | flag | default | meaning |
 |---|---|---|
 | `<corpus_dir>` | required | corpus root, scanned recursively — see [CORPUS-FORMAT.md](CORPUS-FORMAT.md) |
 | `-o, --output <model.viter>` | required | where to write the trained model |
 | `--dict <dict.txt>` | none | pronunciation dictionary. Omit for phoneme-string mode |
-| `--out-textgrids <DIR>` | none | also write TextGrids for the final training alignments |
+| `--out-textgrids <DIR>` | none | run the final full-corpus alignment and write its TextGrids |
 | `--config <train.toml>` | none | `TrainConfig` overrides; unset fields keep MFA defaults |
 | `--no-lda` | off | skip LDA+MLLT; SAT then adapts on delta features, as MFA 3.x exports by default |
 | `--no-sat` | off | stop after LDA+MLLT; no fMLLR, no `am_si` in the model |
@@ -174,6 +175,9 @@ RTF            0.031
 - **RTF** — real-time factor, wall-clock seconds per second of audio. Below 1.0 is faster than
   real time.
 - **oov words** — dictionary mode only; see [CORPUS-FORMAT.md](CORPUS-FORMAT.md#oov-handling).
+
+Without `--out-textgrids`, `train` omits `aligned` and `failed` from the summary because
+no final alignment was measured, and prints a hint to use `viter align` for TextGrids.
 
 Progress during a run is one `indicatif` bar per stage (`mono iter 12/40`), plus a bar for the
 initial feature extraction. Detailed logging goes through `tracing`; raise it with
