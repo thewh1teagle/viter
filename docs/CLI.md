@@ -75,6 +75,31 @@ viter align talk.wav english.viter -o ./out --dict d.txt --text "hello world"
 viter align ./corpus m.viter -o ./out --dict d.txt --ctm --beam 20 --retry-beam 80
 ```
 
+## `viter import`
+
+Converts a Montreal Forced Aligner acoustic model into a `.viter` model, so viter can align with
+MFA's own trained parameters. Accepts either the distributed `.zip` or an unpacked model directory.
+
+| flag | default | meaning |
+|---|---|---|
+| `<path>` | required | MFA model `.zip`, or a directory holding `final.mdl`, `tree`, `phones.txt`, `meta.json` |
+| `-o, --out <FILE>` | `model.viter` | where to write the converted model |
+
+```bash
+viter import ljspeech_ipa.zip -o ljspeech.viter
+viter align ./corpus ljspeech.viter --dict ljspeech.dict -o ./out
+```
+
+The importer reads Kaldi's binary `TransitionModel`, `AmDiagGmm` and `ContextDependency` directly.
+It rebuilds the transition model from the imported tree and topology and then copies MFA's
+probabilities across by matching `(phone, hmm_state, forward_pdf, self_loop_pdf)` tuples, so the
+transition ids are viter's own while the parameters stay MFA's; a tuple-count mismatch is reported
+rather than silently accepted.
+
+The feature pipeline is taken from `meta.json`, except that `uses_splices` is cross-checked against
+the evidence: MFA exports that flag as `false` even for LDA+MLLT models, so when `lda.mat` maps
+spliced MFCCs onto exactly the GMM dimension, the splice+LDA pipeline is used regardless.
+
 ## `viter serve`
 
 Starts the web viewer over a directory of audio and TextGrids — normally an `align` output

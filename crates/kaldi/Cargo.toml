@@ -21,6 +21,8 @@ bytemuck.workspace = true
 pollster.workspace = true
 serde.workspace = true
 postcard.workspace = true
+serde_json.workspace = true
+zip.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 

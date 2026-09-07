@@ -214,6 +214,37 @@ impl TransitionModel {
         }
     }
 
+    /// Replace the transition probabilities with a set trained elsewhere,
+    /// matching by tuple rather than by transition id. Used when importing a
+    /// Kaldi model, whose tuple order need not be the one `new` rebuilds, so
+    /// the log probs must be permuted into place. `foreign` maps each tuple to
+    /// its per-index log probabilities in topology transition order; a missing
+    /// or wrong-length entry is an error, so an import fails loudly.
+    pub fn set_log_probs_by_tuple(
+        &mut self,
+        foreign: &BTreeMap<Tuple, Vec<f32>>,
+    ) -> Result<(), String> {
+        let mut new_log_probs = vec![0.0f32; self.num_transition_ids() + 1];
+        for tstate in 1..=self.num_transition_states() {
+            let tuple = self.tuples[tstate - 1];
+            let probs = foreign
+                .get(&tuple)
+                .ok_or_else(|| format!("no imported probabilities for tuple {tuple:?}"))?;
+            let n = self.num_transition_indices(tstate as u32);
+            if probs.len() != n {
+                let got = probs.len();
+                return Err(format!(
+                    "tuple {tuple:?}: {n} transitions here, {got} imported"
+                ));
+            }
+            let first = self.state2id[tstate] as usize;
+            new_log_probs[first..first + n].copy_from_slice(probs);
+        }
+        self.log_probs = new_log_probs;
+        self.compute_derived_of_probs();
+        Ok(())
+    }
+
     /// Kaldi `Check`, in debug builds.
     fn check(&self) {
         assert!(self.num_transition_ids() != 0 && self.num_transition_states() != 0);
@@ -224,7 +255,9 @@ impl TransitionModel {
             self.num_transition_ids()
         );
         debug_assert!(
-            self.log_probs[1..].iter().all(|p| *p <= 0.0 && p.is_finite()),
+            self.log_probs[1..]
+                .iter()
+                .all(|p| *p <= 0.0 && p.is_finite()),
             "log probs must be finite and non-positive"
         );
     }
@@ -390,10 +423,7 @@ impl TransitionModel {
             forward_pdf: fwd_pdf,
             self_loop_pdf: self_pdf,
         };
-        self.tuples
-            .binary_search(&key)
-            .ok()
-            .map(|i| i as u32 + 1)
+        self.tuples.binary_search(&key).ok().map(|i| i as u32 + 1)
     }
 
     /// Kaldi `TransitionModel::Accumulate`, which for a hard (Viterbi) alignment just adds the
@@ -438,7 +468,9 @@ impl TransitionModel {
                 continue;
             }
             let old_probs: Vec<f64> = (0..n)
-                .map(|i| self.get_transition_prob(self.pair_to_transition_id(tstate, i as u32)) as f64)
+                .map(|i| {
+                    self.get_transition_prob(self.pair_to_transition_id(tstate, i as u32)) as f64
+                })
                 .collect();
             let mut new_probs: Vec<f64> = counts.iter().map(|c| c / tstate_tot).collect();
             // Kaldi floors and renormalises three times.
@@ -465,7 +497,11 @@ impl TransitionModel {
             }
         }
         tracing::info!(
-            objf_per_frame = if count_sum > 0.0 { objf_impr_sum / count_sum } else { 0.0 },
+            objf_per_frame = if count_sum > 0.0 {
+                objf_impr_sum / count_sum
+            } else {
+                0.0
+            },
             frames = count_sum,
             num_floored,
             num_skipped,
@@ -618,7 +654,10 @@ mod tests {
         tm.accumulate(&mut stats, fwd, 10.0);
         let (objf, count) = tm.mle_update(&stats, &MleTransitionUpdateConfig::default());
         assert_eq!(count, 100.0);
-        assert!(objf > 0.0, "objf should improve when moving to the ML estimate");
+        assert!(
+            objf > 0.0,
+            "objf should improve when moving to the ML estimate"
+        );
         assert!((tm.get_transition_prob(loop_tid) - 0.9).abs() < 1e-5);
         assert!((tm.get_transition_prob(fwd) - 0.1).abs() < 1e-5);
         // Derived quantity must be refreshed.

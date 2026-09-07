@@ -1,15 +1,16 @@
 //! Command-line surface: `train`, `align`, `serve`, plus the output helpers they share.
 
 pub mod align;
+pub mod import;
 pub mod serve;
 pub mod train;
 
 use std::path::{Path, PathBuf};
 
 use clap::{Args, Parser, Subcommand};
+use owo_colors::OwoColorize;
 use viter_io::corpus::{CorpusOptions, SpeakerSource};
 use viter_kaldi::device::Device;
-use owo_colors::OwoColorize;
 
 /// Rusty forced aligner. Train, align, serve. One binary.
 #[derive(Parser, Debug)]
@@ -32,6 +33,8 @@ enum Cmd {
     Train(train::TrainArgs),
     /// Align a corpus with a trained model, write TextGrids
     Align(align::AlignArgs),
+    /// Convert a Montreal Forced Aligner acoustic model into a .viter model
+    Import(import::ImportArgs),
     /// Serve a browser viewer for TextGrids + audio
     Serve(serve::ServeArgs),
 }
@@ -41,6 +44,7 @@ impl Cli {
         match self.cmd {
             Cmd::Train(a) => train::run(a),
             Cmd::Align(a) => align::run(a),
+            Cmd::Import(a) => import::run(a),
             Cmd::Serve(a) => serve::run(a),
         }
     }
@@ -52,14 +56,17 @@ pub fn init_logging() -> anyhow::Result<()> {
     // Default: warnings only, plus the one-line device announcement. The progress
     // bars and per-iteration summaries are printed by the train pipeline itself,
     // so INFO tracing would only duplicate them. `RUST_LOG=info` or `debug` for more.
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("warn"));
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn"));
     // VITER_TIMING=1 stamps every log line with seconds since start, which
     // is the cheapest way to see where a run spends its time (`RUST_LOG=debug`).
     let timing = std::env::var_os("VITER_TIMING").is_some();
-    let builder = tracing_subscriber::fmt().with_env_filter(filter).with_target(false);
+    let builder = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_target(false);
     if timing {
-        builder.with_timer(tracing_subscriber::fmt::time::uptime()).init();
+        builder
+            .with_timer(tracing_subscriber::fmt::time::uptime())
+            .init();
     } else {
         builder.without_time().init();
     }
@@ -127,7 +134,11 @@ impl CorpusArgs {
 
 /// Pick the compute device, honouring `--cpu`.
 pub fn device(force_cpu: bool) -> Device {
-    if force_cpu { Device::cpu() } else { Device::auto() }
+    if force_cpu {
+        Device::cpu()
+    } else {
+        Device::auto()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -204,14 +215,19 @@ pub fn report_pron_stats(utts: &[viter_kaldi::types::Utterance]) {
             }
         }
     }
-    let pct = if total == 0 { 0.0 } else { 100.0 * multi as f64 / total as f64 };
-    field(
-        "multi-pron words",
-        format!("{multi} / {total} ({pct:.1}%)"),
-    );
+    let pct = if total == 0 {
+        0.0
+    } else {
+        100.0 * multi as f64 / total as f64
+    };
+    field("multi-pron words", format!("{multi} / {total} ({pct:.1}%)"));
     field(
         "pron probabilities",
-        if has_probs { "yes (dictionary has silence columns)" } else { "no" },
+        if has_probs {
+            "yes (dictionary has silence columns)"
+        } else {
+            "no"
+        },
     );
 }
 
@@ -219,7 +235,11 @@ pub fn corpus_audio_seconds(utts: &[viter_kaldi::types::Utterance]) -> f64 {
     utts.iter()
         .filter_map(|u| viter_kaldi::audio::read(&u.audio).ok())
         .map(|a| {
-            if a.sample_rate == 0 { 0.0 } else { a.samples.len() as f64 / a.sample_rate as f64 }
+            if a.sample_rate == 0 {
+                0.0
+            } else {
+                a.samples.len() as f64 / a.sample_rate as f64
+            }
         })
         .sum()
 }
@@ -263,8 +283,14 @@ mod tests {
     #[test]
     fn output_paths_mirror_the_corpus_tree() {
         let out = Path::new("/out");
-        assert_eq!(output_path(out, "spk1/utt_003", "TextGrid"), Path::new("/out/spk1/utt_003.TextGrid"));
-        assert_eq!(output_path(out, "utt", "TextGrid"), Path::new("/out/utt.TextGrid"));
+        assert_eq!(
+            output_path(out, "spk1/utt_003", "TextGrid"),
+            Path::new("/out/spk1/utt_003.TextGrid")
+        );
+        assert_eq!(
+            output_path(out, "utt", "TextGrid"),
+            Path::new("/out/utt.TextGrid")
+        );
     }
 
     #[test]
