@@ -87,7 +87,7 @@ pub fn run(ctx: &mut StageCtx<'_>, cfg: &TriConfig) -> Result<StageOutput> {
     )?;
 
     ctx.progress
-        .stage_done("tri", &format!("{} gaussians", ctx.model().am.num_gauss()));
+        .stage_done("tri", "");
     Ok(StageOutput { utts, alignments })
 }
 

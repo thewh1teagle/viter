@@ -200,7 +200,10 @@ impl Progress {
             let e = st.stage_started.take().map(|t| t.elapsed());
             (st.last.take(), e)
         };
-        let mut parts = vec![detail.to_string()];
+        let mut parts: Vec<String> = Vec::new();
+        if !detail.is_empty() {
+            parts.push(detail.to_string());
+        }
         if let Some(l) = last {
             parts.push(l);
         }

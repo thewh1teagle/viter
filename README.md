@@ -1,4 +1,9 @@
-<p align="center"><img src="assets/logo/logo.svg" width="72"></p>
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo/logo-dark.svg">
+    <img src="assets/logo/logo-light.svg" width="72" alt="viter">
+  </picture>
+</p>
 
 <h1 align="center">viter</h1>
 

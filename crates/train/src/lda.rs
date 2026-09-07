@@ -151,7 +151,7 @@ pub fn run(ctx: &mut StageCtx<'_>, cfg: &LdaConfig) -> Result<StageOutput> {
         run_iterations(ctx, &mut plan, &mut hooks, feats, &rebuild, &graphs, converted)?;
 
     ctx.progress
-        .stage_done("lda", &format!("{} gaussians", ctx.model().am.num_gauss()));
+        .stage_done("lda", "");
     Ok(StageOutput { utts, alignments })
 }
 

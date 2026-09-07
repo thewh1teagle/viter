@@ -330,7 +330,6 @@ pub fn train(
     }
 
     let progress = Progress::new();
-    let started = Instant::now();
     let mut plan = vec!["features", "mono"];
     if cfg.stages.tri {
         plan.push("tri");
@@ -411,12 +410,7 @@ pub fn train(
 
     progress.stage_done(
         "training",
-        &format!(
-            "{} utterances, {} gaussians, {:.1}s",
-            alignments.len(),
-            model.am.num_gauss(),
-            started.elapsed().as_secs_f64()
-        ),
+        &format!("{} utterances aligned", alignments.len()),
     );
     progress.finish();
 

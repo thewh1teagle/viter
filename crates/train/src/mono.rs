@@ -173,10 +173,7 @@ pub fn run(ctx: &mut StageCtx<'_>, cfg: &MonoConfig) -> Result<StageOutput> {
         outcome.alignments,
     )?;
 
-    ctx.progress.stage_done(
-        "mono",
-        &format!("{} gaussians", ctx.model().am.num_gauss()),
-    );
+    ctx.progress.stage_done("mono", "");
     Ok(StageOutput { utts, alignments })
 }
 
