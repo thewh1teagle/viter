@@ -204,6 +204,9 @@ pub struct UpdateOptions {
     /// model (`sat.py:362`).
     pub remove_low_count_gaussians: bool,
     pub perturb_factor: f32,
+    /// Kaldi `SplitByCount` min_count: kalpy `mle_update` passes its own default
+    /// 20.0 (`gmm.cpp:296-304`), never `min_gaussian_occupancy`.
+    pub split_min_count: f32,
 }
 
 impl Default for UpdateOptions {
@@ -216,6 +219,7 @@ impl Default for UpdateOptions {
             remove_low_count_gaussians: true,
             // Kaldi gmm-est default perturb factor for splitting.
             perturb_factor: 0.01,
+            split_min_count: 20.0,
         }
     }
 }
@@ -261,7 +265,9 @@ pub fn update_model(
             opts.mixup,
             opts.perturb_factor,
             opts.power,
-            gopts.min_gaussian_occupancy as f32,
+            // kalpy mle_update passes a separate split `min_count`, default 20.0
+            // (`gmm.cpp:296-304`), never `min_gaussian_occupancy`.
+            opts.split_min_count,
             rng,
         );
     }

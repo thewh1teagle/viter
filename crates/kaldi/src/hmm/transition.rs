@@ -573,9 +573,19 @@ mod tests {
     #[test]
     fn ids_are_contiguous_and_one_based() {
         let (_, _, tm) = setup();
-        // Bakis phones contribute 2 ids per state, silence 4/4/4/4/2.
-        // 2 phones * 3 states * 2 + (4+4+4+4+2) = 12 + 18 = 30.
-        assert_eq!(tm.num_transition_ids(), 30);
+        // Bakis phones contribute 2 ids per state except the last emitting one, which has
+        // only its forward transition: 2 phones * (2 + 2 + 1) = 10. Silence: 4/4/4/4/2 = 18.
+        let expected: usize = tm
+            .tuples()
+            .iter()
+            .map(|t| {
+                tm.topology().topology_for_phone(t.phone)[t.hmm_state]
+                    .transitions
+                    .len()
+            })
+            .sum();
+        assert_eq!(expected, 10 + 18);
+        assert_eq!(tm.num_transition_ids(), expected);
         assert_eq!(tm.state2id[1], 1);
     }
 
@@ -603,7 +613,10 @@ mod tests {
             .position(|t| t.phone == 2 && t.hmm_state == 2)
             .unwrap() as u32
             + 1;
-        assert!(tm.is_final(tm.pair_to_transition_id(ts_last, 1)));
+        // The last emitting state has no self-loop: its only transition (index 0) is final.
+        assert_eq!(tm.self_loop_of(ts_last), None);
+        assert_eq!(tm.num_transition_indices(ts_last), 1);
+        assert!(tm.is_final(tm.pair_to_transition_id(ts_last, 0)));
     }
 
     #[test]

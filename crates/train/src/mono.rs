@@ -139,7 +139,10 @@ pub fn run(ctx: &mut StageCtx<'_>, cfg: &MonoConfig) -> Result<StageOutput> {
             &mut m.tm,
             &mut m.am,
             &UpdateOptions {
-                mixup: cfg.initial_gaussians,
+                // `monophone.py:351-352` sets initial_gaussians = current_gaussians =
+                // num_gauss (one per pdf) before the flat start, so the iteration-0
+                // update does not split at all.
+                mixup: 0,
                 power: cfg.power,
                 min_gaussian_occupancy: cfg.min_gaussian_occupancy,
                 ..UpdateOptions::default()
@@ -160,8 +163,8 @@ pub fn run(ctx: &mut StageCtx<'_>, cfg: &MonoConfig) -> Result<StageOutput> {
     });
 
     // MFA resets the schedule to whatever the model actually has after init
-    // (`monophone.py:351-352`, `base.py:222`).
-    let initial = result.num_gauss.max(cfg.initial_gaussians);
+    // (`monophone.py:351-352`, `base.py:222`): one gaussian per pdf, no floor.
+    let initial = result.num_gauss;
     let mut plan = IterationPlan {
         stage: Stage::Mono,
         num_iterations: cfg.num_iterations,

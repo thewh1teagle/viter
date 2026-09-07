@@ -236,12 +236,18 @@ fn silence_states(n: usize) -> Vec<HmmState> {
     states
 }
 
-/// MFA non-silence prototype: Bakis left-to-right, self 0.5 / forward 0.5.
+/// MFA non-silence prototype (`dictionary/mixins.py:729-749`): Bakis left-to-right,
+/// self 0.5 / forward 0.5 on every state except the last emitting one, which has
+/// no self-loop and exits with probability 1.0 (it lasts exactly one frame).
 fn bakis_states(n: usize) -> Vec<HmmState> {
     assert!(n >= 1, "non-silence topology needs >= 1 emitting state");
     let mut states = Vec::with_capacity(n + 1);
     for i in 0..n {
-        states.push(HmmState::new(i as i32, vec![(i, 0.5), (i + 1, 0.5)]));
+        if i + 1 == n {
+            states.push(HmmState::new(i as i32, vec![(i + 1, 1.0)]));
+        } else {
+            states.push(HmmState::new(i as i32, vec![(i, 0.5), (i + 1, 0.5)]));
+        }
     }
     states.push(HmmState::new(NO_PDF, Vec::new()));
     states
@@ -295,9 +301,11 @@ mod tests {
         let t = topo();
         let p = t.topology_for_phone(4);
         assert_eq!(p[0].transitions, vec![(0, 0.5), (1, 0.5)]);
-        assert_eq!(p[2].transitions, vec![(2, 0.5), (3, 0.5)]);
+        assert_eq!(p[1].transitions, vec![(1, 0.5), (2, 0.5)]);
+        // Last emitting state: no self-loop, exits with probability 1 (mixins.py:743-746).
+        assert_eq!(p[2].transitions, vec![(3, 1.0)]);
         assert_eq!(p[0].self_loop_index(0), Some(0));
-        assert_eq!(p[2].self_loop_index(2), Some(0));
+        assert_eq!(p[2].self_loop_index(2), None);
     }
 
     #[test]

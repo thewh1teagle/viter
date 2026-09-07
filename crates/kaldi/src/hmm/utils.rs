@@ -371,9 +371,12 @@ mod tests {
                 .position(|&(d, _)| d != hmm_state)
                 .unwrap();
             out.push(tm.pair_to_transition_id(ts, fwd as u32));
-            let loop_tid = tm.self_loop_of(ts).unwrap();
-            for _ in 0..n {
-                out.push(loop_tid);
+            // The last emitting state has no self-loop under the MFA topology, so it can only
+            // ever last one frame; `extra` is ignored there.
+            if let Some(loop_tid) = tm.self_loop_of(ts) {
+                for _ in 0..n {
+                    out.push(loop_tid);
+                }
             }
         }
         out

@@ -250,7 +250,13 @@ fn init_from_stats(
         };
         occs.push(summed.count());
         let mean: Vec<f32> = summed.mean().into_iter().map(|x| x as f32).collect();
-        let var: Vec<f32> = summed.var().into_iter().map(|x| x as f32).collect();
+        // Kaldi `DiagGmm(GaussClusterable, var_floor)` (diag-gmm.cc:954) floors the
+        // variance at var_floor (0.01, kalpy gmm.cpp:2314) before inverting.
+        let var: Vec<f32> = summed
+            .var()
+            .into_iter()
+            .map(|x| x.max(setup.var_floor) as f32)
+            .collect();
         am.add_pdf(viter_kaldi::gmm::DiagGmm::from_single_gaussian(&mean, &var));
     }
     if setup.mixup > 0 {

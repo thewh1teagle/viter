@@ -591,7 +591,11 @@ fn align_for_pron_probs(ctx: &mut StageCtx<'_>, utts: &[usize]) -> Result<Vec<Op
     };
     bar.finish();
 
-    if ctx.model().am_si.is_some() {
+    // MFA's pronunciation-probability stage counts from the *speaker-independent*
+    // single-pass alignment of the previous stage (`trainer.py:600` -> `align()` with
+    // `uses_speaker_adaptation = False`, `alignment/base.py:285`), never from an
+    // fMLLR-adapted second pass, so the second pass below is disabled.
+    if false && ctx.model().am_si.is_some() {
         let transforms = {
             let m = ctx.model();
             sat::estimate_fmllr(

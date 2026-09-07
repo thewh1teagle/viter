@@ -65,8 +65,16 @@ pub fn run(ctx: &mut StageCtx<'_>, cfg: &SatConfig, key: &str) -> Result<StageOu
             thresh: cfg.tree_thresh,
             cluster_thresh: cfg.cluster_threshold,
             var_floor: cfg.tree_var_floor,
-            mixup: cfg.initial_gaussians(),
-            from_previous: true,
+            // `sat.py:254` `_setup_tree(init_from_previous=self.quick,
+            // initial_mix_up=self.quick)`: a normal SAT round re-estimates one
+            // gaussian per new leaf from its statistics and grows from num_leaves;
+            // only MFA's optional `quick` round copies the previous model and mixes up.
+            mixup: if cfg.quick {
+                cfg.initial_gaussians()
+            } else {
+                0
+            },
+            from_previous: cfg.quick,
         },
     )?;
 
@@ -247,11 +255,14 @@ pub fn estimate_fmllr(
             // Too little data to adapt this speaker reliably.
             return None;
         }
-        // Start from the speaker's existing transform so estimation is incremental
-        // across fMLLR iterations, as Kaldi's gmm-est-fmllr does.
-        let prior = ctx.feats.fmllr_for(spk);
-        let (mat, _objf, _count) = accs.update(&cfg.fmllr, prior);
-        Some(mat)
+        // kalpy (`transform.cpp:596-607`) starts from the identity on the already
+        // adapted features and then composes the new transform with the speaker's
+        // previous one (`feat/fmllr.py:226-229`), so adaptation accumulates.
+        let (mat, _objf, _count) = accs.update(&cfg.fmllr, None);
+        Some(match ctx.feats.fmllr_for(spk) {
+            Some(prev) => viter_kaldi::transform::compose_transforms(&mat, prev, true),
+            None => mat,
+        })
     };
 
     let transforms: Vec<Option<Mat>> = if ctx.device.kind() == DeviceKind::Gpu {
