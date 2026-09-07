@@ -37,7 +37,6 @@ TEST (1344 utterances, 50,337 phone boundaries) vs hand labels:
 | MFA trained on TIMIT (McAuliffe 2026) | 63.6% | — | 85.3% | 97.1% | — | 12.0 ms |
 | MFA `english_us_arpa` 3.0 (McAuliffe 2026) | 61.9% | — | 83.6% | 97.4% | — | 12.1 ms |
 | MAUS (McAuliffe 2026) | 63.6% | — | 86.8% | 97.8% | — | 11.3 ms |
-| viter, `--sat-rounds 1 --no-pron-probs` | TODO | TODO | TODO | TODO | TODO | TODO |
 
 TRAIN (seen data, the training-time TextGrids, 3696 utterances, 139k boundaries):
 
@@ -92,8 +91,8 @@ Interspeech 2026 (https://arxiv.org/abs/2606.10675), Table 3.
 ## Notes
 
 - No failed utterances and no label-sequence mismatches on TRAIN or TEST at the default beam.
-- TODO: `--sat-rounds 1 --no-pron-probs` row (462 speakers, ~10 utterances each, so fMLLR
-  has little data per speaker; the short schedule may lose less here than on LJSpeech).
+- Not run yet: `--sat-rounds 1 --no-pron-probs`. With 462 speakers of ~10 utterances each,
+  fMLLR has little data per speaker, so the short schedule may lose less here than on LJSpeech.
 - TODO: the 10 ms gap. Candidates: boundary placement inside a frame (viter/MFA both snap to
   10 ms; the published MFA numbers are on the same grid, so this is not the whole story),
   transition priors on closure→burst, and `p` specifically.
