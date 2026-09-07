@@ -1,10 +1,14 @@
 # viter tasks. Run `chore list` to see them.
 require 1.7.0
 
-corpus=data/lj200
-dict=data/dict/cmudict.dict
-model=data/lj200.viter
-out=data/lj200-aligned
+# LJSpeech setup used for parity work (see plans/parity/README.md).
+corpus=data/ljfull
+dict=data/dict/ljspeech_ipa_noprobs.dict
+mfa_tg=data/mfa-ljspeech/textgrids
+# Latest full-schedule model and its training-time TextGrids.
+model=data/ljfull-v12.viter
+train_tg=data/ljfull-v12-tg
+out=data/ljfull-aligned
 
 # Build the web viewer into web/dist (embedded into the binary).
 task web {
@@ -13,14 +17,19 @@ task web {
     pnpm build
 }
 
-# Build the release binary (builds the web viewer first).
+# Build the release binary (fast profile; builds the web viewer first).
 task build {
     web
     cargo build --release
-    echo "built target/release/viter"
 }
 
-# Fast type check of the workspace, no web build.
+# Ship-quality binary: fat LTO, stripped (what the release workflow uses).
+task dist {
+    web
+    cargo build --profile dist
+}
+
+# Type-check the workspace.
 task check {
     exists web/dist || web
     cargo check --workspace --all-targets
@@ -32,69 +41,86 @@ task test {
     cargo test --workspace
 }
 
+# Format and lint the way CI does.
+task lint {
+    exists web/dist || web
+    cargo fmt --all -- --check
+    cargo clippy --workspace --all-targets
+    cd web
+    pnpm exec tsc -b
+}
+
+# Train on full LJSpeech with MFA's schedule (the parity config, ~10 min on a GPU):
+# train [out_model] [out_textgrids].
+task train model=$model tg=$train_tg {
+    build
+    remove $2
+    target/release/viter train $corpus --dict $dict --no-position-dependent -o $1 --out-textgrids $2 --log $1.log
+}
+
+# Same, short schedule (~2 min, ~70% parity): train-fast [out_model].
+task train-fast model=data/ljfull-fast.viter {
+    build
+    target/release/viter train $corpus --dict $dict --no-position-dependent --sat-rounds 1 --no-pron-probs -o $1
+}
+
+# Align the corpus with the latest model: align [model] [out].
+task align model=$model out=$out {
+    exists target/release/viter || build
+    remove $2
+    target/release/viter align $corpus $1 --dict $dict -o $2
+}
+
+# Parity of a TextGrid folder against MFA's: parity [textgrids].
+task parity tg=$train_tg {
+    uv run plans/parity/parity_001.py $1 $mfa_tg
+    uv run plans/parity/parity_003_silences.py $1 $mfa_tg
+    uv run plans/parity/parity_002_breakdown.py $1 $mfa_tg
+}
+
+# Feature parity of viter's MFCC pipeline against Kaldi binaries.
+task parity-feats {
+    uv run plans/parity/parity_004_feats.py
+}
+
+# Per-phone gaussian allocation and transition probs of a model: inspect [model].
+task inspect model=$model {
+    cargo run --release -q -p viter-kaldi --example inspect -- $1
+}
+
+# Symlink the corpus wavs next to a TextGrid folder so `serve` can pair them: link-audio [textgrids].
+task link-audio tg=$train_tg {
+    for f in $(find $1 *.TextGrid) {
+        d=$(dirname $f)
+        b=$(basename $f .TextGrid)
+        rel=$(realpath --relative-to=$d $corpus/LJ/$b.wav)
+        exists $d/$b.wav || ln -s $rel $d/$b.wav
+    }
+}
+
+# Serve a training TextGrid folder next to its audio: serve [textgrids].
+task serve tg=$train_tg {
+    exists target/release/viter || build
+    link-audio $1
+    target/release/viter serve $1
+}
+
+# Serve viter vs MFA side by side (tiers: words, phones, mfa words, mfa phones).
+task compare-serve {
+    exists target/release/viter || build
+    target/release/viter serve data/demo-compare --port 7879
+}
+
+# Rebuild data/demo-compare from a TextGrid folder (40 files): compare-build [textgrids].
+task compare-build tg=$train_tg {
+    uv run plans/parity/compare_build.py $1
+}
+
 # Web dev server with /api proxied to a running `viter serve`.
 task web-dev {
     cd web
     exists node_modules || pnpm install
     pnpm dev
-}
-
-# Train on the LJSpeech 200 subset: train [corpus] [dict] [model].
-task train corpus=$corpus dict=$dict model=$model {
-    build
-    target/release/viter train $1 --dict $2 -o $3
-}
-
-# Align the subset with the trained model: align [corpus] [model] [out].
-task align corpus=$corpus model=$model out=$out {
-    build
-    target/release/viter align $1 $2 --dict $dict -o $3
-}
-
-# Serve real MFA TextGrids + wavs from data/demo in the browser (no training needed).
-task demo-serve {
-    build
-    target/release/viter serve data/demo
-}
-
-# Serve viter vs MFA side by side (tiers: words, phones, mfa words, mfa phones) from data/demo-compare.
-task compare-serve {
-    build
-    target/release/viter serve data/demo-compare --port 7879
-}
-
-# Serve the aligned output in the browser: serve [dir].
-task serve dir=$out {
-    build
-    target/release/viter serve $1
-}
-
-# Train, align, serve on the subset in one go.
-task demo {
-    train
-    align
-    serve
-}
-
-# Parity check against MFA (uv script; installs MFA into its own env).
-task parity {
-    uv run plans/parity/parity_001.py
-}
-
-# Format everything.
-task format {
-    cargo fmt --all
-    cd web
-    pnpm exec prettier --write src 2>/dev/null || echo "prettier not installed, skipped"
-}
-
-# Lint the way CI does.
-task lint {
-    exists web/dist || web
-    cargo fmt --all -- --check
-    cargo clippy --workspace --all-targets -- -D warnings
-    cd web
-    pnpm exec tsc -b
 }
 
 # Delete build output.
