@@ -2981,7 +2981,7 @@ dependencies = [
 
 [[package]]
 name = "viter"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -2999,7 +2999,7 @@ dependencies = [
 
 [[package]]
 name = "viter-io"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "encoding_rs",
@@ -3013,7 +3013,7 @@ dependencies = [
 
 [[package]]
 name = "viter-kaldi"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytemuck",
  "faer",
@@ -3038,7 +3038,7 @@ dependencies = [
 
 [[package]]
 name = "viter-serve"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -3057,7 +3057,7 @@ dependencies = [
 
 [[package]]
 name = "viter-train"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "console 0.15.11",

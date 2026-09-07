@@ -118,12 +118,9 @@ export function Waveform({ file, player }: { file: FileEntry; player: PlayerRef 
       ws.on("timeupdate", (t: number) => {
         useStore.getState().setPlayhead(t)
         const region = regionRef.current
-        if (!region) return
-        if (!region.armed) {
-          if (t >= region.start && t < region.end) region.armed = true
-          return
-        }
-        if (t >= region.end) {
+        if (!region || !region.armed) return
+        // Stop at the interval end; ignore stale readings from before the seek.
+        if (t >= region.end && t >= region.start) {
           regionRef.current = null
           ws?.pause()
         }
@@ -181,25 +178,49 @@ export function Waveform({ file, player }: { file: FileEntry; player: PlayerRef 
         const end = Math.min(to, dur)
         const region = { start, end, armed: false }
         regionRef.current = region
-        // Every click restarts the interval, even while it is still playing.
-        w.pause()
-        const begin = () => {
-          // A later click superseded this one while we waited for metadata.
+        const media = w.getMediaElement()
+
+        // Drive the media element directly and arm only once the browser has
+        // confirmed the seek ("seeked"), so a click on an interval earlier than
+        // the current position never depends on the order of timeupdate events.
+        const go = () => {
           if (disposed || regionRef.current !== region) return
-          w.setTime(start)
+          region.armed = true
           useStore.getState().setPlayhead(start)
-          w.play().catch((err: unknown) => {
+          media.play().catch((err: unknown) => {
             if (regionRef.current === region) regionRef.current = null
             console.warn("play failed", err)
           })
         }
+        const seekThenGo = () => {
+          if (disposed || regionRef.current !== region) return
+          media.pause()
+          const already = Math.abs(media.currentTime - start) < 0.005 && !media.seeking
+          if (already) {
+            go()
+            return
+          }
+          const onSeeked = () => {
+            media.removeEventListener("seeked", onSeeked)
+            go()
+          }
+          media.addEventListener("seeked", onSeeked)
+          media.currentTime = start
+          // Some engines do not fire "seeked" for a seek to the same buffered
+          // position; a short fallback keeps the click from being swallowed.
+          window.setTimeout(() => {
+            if (regionRef.current === region && !region.armed) {
+              media.removeEventListener("seeked", onSeeked)
+              go()
+            }
+          }, 250)
+        }
         // Seeking before the media element knows its duration is silently
         // dropped, so the first click on a freshly opened file did nothing.
-        const media = w.getMediaElement()
         if (media.readyState >= HTMLMediaElement.HAVE_METADATA) {
-          begin()
+          seekThenGo()
         } else {
-          media.addEventListener("loadedmetadata", begin, { once: true })
+          media.addEventListener("loadedmetadata", seekThenGo, { once: true })
           if (media.networkState !== HTMLMediaElement.NETWORK_LOADING) media.load()
         }
       },
