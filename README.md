@@ -34,6 +34,8 @@ viter serve out/
 
 `corpus/` holds audio files with a same-named `.txt` transcript beside each one. Without a dictionary every token is a phoneme, so any language works. An existing MFA model loads with `viter import`.
 
+Pretrained English models and dictionaries: [models-v1.0](https://github.com/thewh1teagle/viter/releases/tag/models-v1.0).
+
 ## Python
 
 ```python
