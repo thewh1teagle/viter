@@ -14,6 +14,15 @@ Built once from the corpus symbol table, before stage 1.
 - **Graph** (`hmm::build_graph`, see [ARCHITECTURE.md](ARCHITECTURE.md#why-no-fsts)):
   `transition_scale = 1.0`, `self_loop_scale = 0.1`, `silence_probability = 0.5`,
   `initial_silence_probability = 0.5`, plus the final silence/non-silence corrections.
+  Arcs carry only their model-free cost (lexicon, silence and fixed topology probabilities);
+  `Graph::apply_transition_probs` adds the current transition model's log-probabilities,
+  and `run_iterations` calls it before every realignment, as Kaldi compiles training graphs
+  with `transition_scale = self_loop_scale = 0` and `gmm-align-compiled` adds the model's
+  probabilities on each pass (`AddTransitionProbs`). Building each stage's graphs once from
+  the freshly initialised topology, as viter used to, left the state-skip arcs at 1/3 for
+  the whole stage while the trained model had them at the 0.01 floor: one- and two-frame
+  phones stayed cheap, the stop pdfs learned closure frames, and closure→stop and
+  vowel→closure boundaries came out ~10 ms early against TIMIT's hand labels.
 
 ## Stage 1 — Monophone
 
@@ -22,8 +31,19 @@ No context: one `ContextDependency` with N=1, P=0, built by `monophone_shared` o
 1. **Init** (Kaldi `gmm_init_mono`): compute a global single-Gaussian mean and variance from
    the first ~10 utterances; every pdf starts as a copy of that one Gaussian. Build the
    `TransitionModel` from `(ctx, topo)`.
-2. **Flat start** (`align::equal_align`, Kaldi `EqualAlign`): a random path through the graph
-   with roughly equal per-phone durations, giving the first alignment without a trained model.
+2. **Flat start** (`align::equal_align`, Kaldi `EqualAlign`): a path through the graph with
+   roughly equal per-phone durations, giving the first alignment without a trained model.
+   viter's walk is deterministic: for emitting arcs the smallest forward step, so every
+   phone visits all of its states and the frames are split between them, and every optional
+   silence is taken, so each word boundary starts with a silence hypothesis the first real
+   alignment can shrink away. Kaldi picks each step uniformly over a state's arcs, which was
+   written for topologies whose only choices are the silences; with MFA's state-skip arcs
+   two thirds of the phones start with a state or the whole phone skipped, at random, and
+   the monophone model depends on the draw (TIMIT within 10 ms 52-58% across seeds, a tenth
+   of the utterances failing the first alignment on bad draws; MFA only ever sees one draw,
+   `srand(1234)` before every utterance). Deterministic: 57-58% whatever the seed, no
+   failures; silences drawn at random gave 54-57%, never taking them 53-54%. An utterance
+   with fewer frames than that path needs falls back to Kaldi's random walk.
 3. **Iteration 0**: accumulate GMM + transition stats from the flat-start alignment, MLE update
    with `min_gaussian_occupancy = 3.0` (only this iteration; the kalpy default of 10.0 applies
    afterwards).

@@ -13,8 +13,10 @@ https://github.com/thewh1teagle/viter/issues/8.
   Phoneme-string mode, no dictionary, `--no-position-dependent`. MFA gets the same corpus
   through a one-token-per-word dictionary (`plans/timit/timit_003.py`).
 - Scoring: every start (and gap-adjacent end) boundary of every non-silence phone, matched by
-  sequence position; `plans/timit/timit_002.py`. The literature reports 10/25/50 ms, so the
-  25 ms column is the one to compare.
+  sequence position; `plans/timit/timit_002.py`. `--mfa-metric` scores the way the
+  published MFA numbers are made (MFA's `compare_alignments`: phone starts only, closure+release
+  merged into one interval, silences kept, an interval-level Levenshtein alignment, errors
+  rounded to the millisecond) and is the row to compare with McAuliffe 2026.
 
 ```
 uv run plans/timit/timit_001.py                       # data/data → data/timit
@@ -26,28 +28,48 @@ uv run plans/timit/timit_002.py data/timit-test-tg
 ## Results
 
 viter, full schedule (mono → tri → LDA+MLLT → SAT ×3 with pronunciation probabilities),
-trained on TRAIN in 31 min before the fMLLR fix of issue #10 (~5 min after), aligned TEST
-in 18 s including boundary refinement. 0 failed utterances, 0 label mismatches.
+trained on TRAIN in 3.6 min, aligned TEST in 39 s including boundary refinement. MFA 3.4.0
+trained on the same corpus and dictionary (`plans/timit/timit_003.py`, `data/timit-mfa/`)
+in 19 min; its as-shipped `mfa align` skips the fMLLR pass, so the MFA rows are given both
+ways ([PARITY.md](PARITY.md)). 0 failed utterances, 0 label mismatches.
 
-TEST (1344 utterances, 50,337 phone boundaries) vs hand labels:
+TEST (1344 utterances, 50,337 phone boundaries) vs hand labels, viter's metric:
 
 | system | ≤10 ms | ≤20 ms | ≤25 ms | ≤50 ms | median | mean |
 |---|---|---|---|---|---|---|
-| **viter, trained on TIMIT** | **68.1%** | **86.5%** | **90.5%** | **97.7%** | 5.9 ms | 10.5 ms |
-| viter, `--no-refine` (10 ms frame grid, MFA's output) | 49.9% | 80.7% | 88.2% | 97.7% | 10.0 ms | 13.6 ms |
-| MFA trained on TIMIT (McAuliffe 2026) | 63.6% | — | 85.3% | 97.1% | — | 12.0 ms |
-| MFA `english_us_arpa` 3.0 (McAuliffe 2026) | 61.9% | — | 83.6% | 97.4% | — | 12.1 ms |
-| MAUS (McAuliffe 2026) | 63.6% | — | 86.8% | 97.8% | — | 11.3 ms |
+| **viter, trained on TIMIT** | **66.5%** | **85.7%** | **89.9%** | **97.6%** | 6.3 ms | 10.8 ms |
+| viter, `--no-refine` (10 ms frame grid, MFA's output) | 56.4% | 85.4% | 90.9% | 97.9% | 8.1 ms | 12.0 ms |
+| MFA 3.4.0 trained on TIMIT, with the fMLLR pass | 57.9% | 85.7% | 91.1% | 97.9% | 7.5 ms | 11.8 ms |
+| MFA 3.4.0 trained on TIMIT, `mfa align` as shipped | 57.5% | 85.2% | 90.7% | 97.7% | 7.6 ms | 12.1 ms |
+| viter before the training fixes of 2026-09-07, `--no-refine` | 49.9% | 80.7% | 88.2% | 97.7% | 10.0 ms | 13.6 ms |
+
+Same TextGrids with `--mfa-metric` (43.9k phone starts), against McAuliffe 2026 Table 5.
+The published MFA row was trained and scored on TRAIN+TEST including SA; ours is TEST
+without SA, so it is indicative:
+
+| system | ≤10 ms | ≤25 ms | ≤50 ms | mean |
+|---|---|---|---|---|
+| **viter, trained on TIMIT** | **66.6%** | **89.8%** | **97.7%** | 11.1 ms |
+| viter, `--no-refine` | 58.8% | 91.1% | 98.1% | 11.9 ms |
+| MFA 3.4.0 trained on TIMIT, with the fMLLR pass | 61.1% | 91.2% | 98.1% | 11.6 ms |
+| MFA 3.4.0 trained on TIMIT, as shipped | 60.6% | 90.7% | 97.9% | 11.9 ms |
+| viter before 2026-09-07, `--no-refine` | 54.3% | 89.5% | 98.0% | 12.9 ms |
+| MFA trained on TIMIT (McAuliffe 2026) | 63.6% | 85.3% | 97.1% | 12.0 ms |
+| MFA `english_us_arpa` 3.0 (McAuliffe 2026) | 61.9% | 83.6% | 97.4% | 12.1 ms |
+| MAUS (McAuliffe 2026) | 63.6% | 86.8% | 97.8% | 11.3 ms |
+
+On the frame grid viter and MFA trained on the same corpus are within half a point of each
+other at every tolerance (parity); refinement adds 9-11 points at 10 ms and costs about a
+point at 25 ms. viter's own metric and MFA's differ by 2-3 points at 10 ms because MFA's
+merges closures with their releases (dropping the closure→burst boundary, the hardest one
+on the grid) and counts silence boundaries.
 
 TRAIN (seen data, the training-time TextGrids, frame grid, 3696 utterances, 139k boundaries):
 
 | system | ≤10 ms | ≤20 ms | ≤25 ms | ≤50 ms | median | mean |
 |---|---|---|---|---|---|---|
-| viter | 50.9% | 81.7% | 89.1% | 98.0% | 9.7 ms | 12.9 ms |
-
-viter is above the published GMM-HMM numbers at every tolerance. The published runs are on
-a different test subset with MFA's own silence handling, so the 25 ms column is the
-comparable one.
+| MFA 3.4.0 | 59.8% | 87.3% | 92.2% | 98.2% | 7.5 ms | 11.1 ms |
+| viter, before 2026-09-07 | 50.9% | 81.7% | 89.1% | 98.0% | 9.7 ms | 12.9 ms |
 
 ### The 10 ms column (issue #12)
 
@@ -59,14 +81,25 @@ cross, and those states were trained on exactly the transition frames. Removing 
 transition class's mean bias (an oracle) takes the 10 ms figure to 68%, so that is the
 whole story. `plans/timit/timit_004.py` prints the signed breakdown.
 
-`viter align` therefore refines every boundary to 1 ms by default ([CLI.md](CLI.md)): a
-window of up to ±30 ms is rescored with 1 ms-shifted features and the two phones'
-middle-state pdfs, and the boundary goes where their likelihood ratio crosses the midpoint
-of its own range in the window. That is MFA's `--fine_tune` idea, self-calibrating per
-boundary; MFA uses the boundary-state pdfs and a ±10 ms window, which on this data gives
-~57% at 10 ms against 58% for the midpoint crossing alone. Refined boundaries are placed
-at the midpoint between the centres of the two 1 ms frames they separate, i.e. 4.5 ms after
-the frame index, which is what the frame-grid convention already does at 10 ms.
+Part of the bias was training, not decoding. Two fixes on 2026-09-07 took the frame grid
+from 49.9% to 56.4% at 10 ms, level with MFA trained on the same corpus (57.9%): training
+graphs are now re-costed from the current transition model before every realignment, as
+Kaldi does (viter had kept the freshly initialised topology's state-skip probability of 1/3
+all stage long, so one- and two-frame phones stayed cheap and the stop pdfs learned closure
+frames, putting closure→stop and vowel→closure ~10 ms early), and the flat start walks every
+HMM state and takes every optional silence instead of drawing both at random
+([TRAINING.md](TRAINING.md)).
+
+`viter align` refines every boundary to 1 ms by default ([CLI.md](CLI.md)): a window of up
+to ±30 ms is rescored with 1 ms-shifted features and the two phones' middle-state pdfs, and
+the boundary goes where their likelihood ratio crosses the midpoint of its own range in the
+window. That is MFA's `--fine_tune` idea, self-calibrating per boundary; MFA uses the
+boundary-state pdfs and a ±10 ms window. In MFA 3.4.0 `--fine_tune` is a no-op as shipped
+(see [PARITY.md](PARITY.md)); patched to run, it takes MFA's own TEST grid from 57.9% to
+56.5% at 10 ms, whereas viter's refinement takes its grid from 56.4% to 66.5%. Refined
+boundaries are placed at the midpoint between the centres of the two 1 ms frames they
+separate, i.e. 4.5 ms after the frame index, which is what the frame-grid convention already
+does at 10 ms.
 
 Two more corrections use a 1 ms log-energy contour of the waveform, i.e. the data rather
 than phone identities (`refine.rs`):
@@ -109,16 +142,16 @@ Per phone class on TEST (viter, refined):
 
 | class | n | ≤10 ms | ≤20 ms | ≤25 ms | ≤50 ms | median |
 |---|---|---|---|---|---|---|
-| vowel | 12655 | 67.8% | 86.5% | 91.1% | 98.4% | 5.6 ms |
-| diphthong | 4317 | 64.0% | 83.3% | 88.7% | 97.2% | 6.5 ms |
-| glide | 6026 | 54.1% | 74.5% | 80.7% | 95.1% | 8.5 ms |
-| nasal | 4729 | 70.0% | 86.9% | 90.8% | 97.4% | 5.8 ms |
-| fricative | 7498 | 69.3% | 89.2% | 92.4% | 98.0% | 6.4 ms |
-| affricate | 623 | 79.1% | 90.0% | 92.6% | 97.8% | 3.5 ms |
-| stop | 7494 | 76.5% | 89.4% | 91.8% | 97.7% | 3.7 ms |
-| closure | 6995 | 70.4% | 92.3% | 95.0% | 98.6% | 6.4 ms |
+| vowel | 12641 | 65.3% | 84.7% | 89.2% | 97.9% | 6.3 ms |
+| diphthong | 4315 | 60.3% | 79.8% | 84.8% | 96.1% | 7.4 ms |
+| glide | 6020 | 54.9% | 74.6% | 80.4% | 95.1% | 8.4 ms |
+| nasal | 4723 | 71.0% | 86.7% | 90.4% | 97.4% | 5.5 ms |
+| fricative | 7493 | 67.2% | 86.9% | 91.0% | 98.0% | 6.4 ms |
+| affricate | 622 | 76.7% | 90.2% | 92.8% | 99.4% | 3.8 ms |
+| stop | 7488 | 78.5% | 91.9% | 94.7% | 98.8% | 3.4 ms |
+| closure | 6989 | 67.6% | 90.4% | 94.3% | 98.7% | 6.5 ms |
 
-Worst phones at 20 ms (39-fold): `hh` 65%, `q` 66%, `l` 69%, `p` 75%, `uw` 76%.
+Worst phones at 20 ms (39-fold): `hh` 67%, `q` 68%, `l` 69%, `uw` 73%, `aw` 74%.
 
 Word boundaries on TEST (`.WRD` tier, 13,210 boundaries; 8 files skipped where the word
 grouping from `.WRD` disagrees with the phone grouping), for comparison with neural word
@@ -126,8 +159,8 @@ aligners:
 
 | system | ≤10 ms | ≤25 ms | ≤50 ms | ≤100 ms |
 |---|---|---|---|---|
-| **viter, words tier, official TEST** | **47.5%** | **80.2%** | **93.2%** | **98.4%** |
-| viter, `--no-refine` | 41.1% | 78.2% | 93.3% | 98.4% |
+| **viter, words tier, official TEST** | **56.5%** | **80.7%** | **93.2%** | **98.3%** |
+| viter, `--no-refine` | 47.4% | 83.1% | 93.8% | 98.3% |
 | MWA (Weber 2026, own split, trained on TIMIT words) | 58.0% | 81.3% | 91.6% | 97.8% |
 | MFA pretrained `english_us_arpa`, orthographic input (Rousso 2024 via Weber 2026) | 41.6% | 72.8% | 89.4% | 97.4% |
 | WhisperX (same) | 22.4% | 52.7% | 82.4% | 94.2% |
@@ -144,7 +177,8 @@ Interspeech 2026 (https://arxiv.org/abs/2606.10675), Table 3.
 
 ## Notes
 
-- No failed utterances and no label-sequence mismatches on TRAIN or TEST at the default beam.
+- No failed utterances and no label-sequence mismatches on TRAIN or TEST at the default beam
+  on the frame grid; refinement can shrink a one-frame phone to nothing (one case on TEST).
 - Not run yet: `--sat-rounds 1 --no-pron-probs`. With 462 speakers of ~10 utterances each,
   fMLLR has little data per speaker, so the short schedule may lose less here than on LJSpeech.
 - Cheap loop for boundary work: `viter align data/timit/test/DR1 data/timit.viter -o out/DR1`

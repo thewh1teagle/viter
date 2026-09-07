@@ -88,7 +88,7 @@ struct FineFeats {
 impl FineFeats {
     fn compute(samples_16k: &[f32], setup: &UttFeatureSetup<'_>) -> Self {
         let computer = MfccComputer::new(setup.mfcc.clone());
-        let per_ms = (setup.mfcc.sample_rate as usize) / 1000;
+        let per_ms = SAMPLES_PER_MS;
         let streams = (0..10)
             .map(|o| {
                 let from = (o * per_ms).min(samples_16k.len());
@@ -162,14 +162,12 @@ pub fn refine_utterance(
         let next_pdf = core_pdf(tm, &ali.tids[frame..next_end], ali.tids[frame]);
 
         let b = grid[k];
-        let left = opts
-            .max_shift_ms
-            .min((b - grid[k - 1]) / 2)
-            .min(b - bounds[k - 1] - 1);
-        let right = opts
-            .max_shift_ms
-            .min((grid[k + 1] - b) / 2)
-            .min(grid[k + 1] - b - 1);
+        // A boundary may move up to half its neighbour's duration into it: `d / 2` to
+        // the left, `(d - 1) / 2` to the right. The two never meet, so every phone
+        // keeps at least one tick even where two boundaries share a 10 ms phone
+        // (`ceil(d / 2) > (d - 1) / 2` for every `d >= 1`).
+        let left = opts.max_shift_ms.min((b - grid[k - 1]) / 2);
+        let right = opts.max_shift_ms.min((grid[k + 1] - b - 1) / 2);
         if left + right < 2 {
             continue;
         }
@@ -238,10 +236,13 @@ pub fn refine_utterance(
     }
 }
 
+/// `audio::read_16k` hands every model 16 kHz samples.
+const SAMPLES_PER_MS: usize = 16;
+
 /// Log energy (natural log of the mean square; 1 nat = 4.3 dB) of the 5 ms of
 /// waveform centred at `ms`; the floor past either end of the waveform.
 fn log_energy(samples_16k: &[f32], ms: usize) -> f32 {
-    let c = ms * 16;
+    let c = ms * SAMPLES_PER_MS;
     let lo = c.saturating_sub(40).min(samples_16k.len());
     let hi = (c + 40).min(samples_16k.len());
     let n = (hi - lo).max(1) as f32;
@@ -366,6 +367,17 @@ pub fn refine_all<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn window_caps_never_let_neighbouring_boundaries_meet() {
+        // Boundaries at 0, d and 2d (ms): the first may move right by (d-1)/2 and the
+        // second left by d/2; the phone between them must keep at least one tick.
+        for d in 1..=60usize {
+            let right = 30usize.min((d - 1) / 2);
+            let left = 30usize.min(d / 2);
+            assert!(right + CENTRE_MS < d - left + CENTRE_MS, "d = {d}");
+        }
+    }
 
     #[test]
     fn best_split_finds_a_clean_step() {

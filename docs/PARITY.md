@@ -33,6 +33,22 @@ silence-free LDA/MLLT statistics, and MFA's exact pronunciation-probability coun
 Aligning with an imported MFA model reproduces MFA's own TextGrids at 99.8% within 20 ms.
 Tracking issue: https://github.com/thewh1teagle/viter/issues/5.
 
+**TIMIT.** The same check against hand labels rather than against MFA: MFA 3.4.0 trained on
+the TIMIT corpus of [TIMIT.md](TIMIT.md) (same audio, phone sets, dictionary and machine;
+`plans/timit/timit_003.py`, artefacts in `data/timit-mfa/`) in 19 min, viter in 3.6 min.
+TEST phone boundaries within 10/20/25/50 ms of the hand labels on the frame grid: MFA
+57.9 / 85.7 / 91.1 / 97.9%, viter (`--no-refine`) 56.4 / 85.4 / 90.9 / 97.9%; with MFA's
+`compare_alignments` metric (`timit_002.py --mfa-metric`) 61.1 / 91.2 / 98.1% vs
+58.6 / 91.2 / 98.1% within 10/25/50 ms. Two MFA 3.4.0 bugs turned up on the way, both worked
+around locally for the reference run (`data/timit-mfa/mfa-3.4.0-local-patches.diff`): the
+as-shipped `mfa align` resets `uses_speaker_adaptation` before `_align()` and so skips the
+fMLLR second pass even with a speaker-adapted model (57.5% at 10 ms as shipped, 57.9% with
+the pass restored; the training-time TextGrids do use it), and `--fine_tune` is a no-op
+because since 31d0f552 it runs inside `_align()` before the phone intervals it adjusts have
+been collected (and once moved after collection, its job also needs the words archive and
+mis-keys its alignment reader; patched to run, it lowers the grid to 56.5% at 10 ms).
+viter's `align` does the fMLLR pass and refines by default.
+
 These are frame-grid numbers: training-time TextGrids, and `viter align --no-refine`. By
 default `align` refines every boundary to 1 ms afterwards ([CLI.md](CLI.md), issue #12),
 which is deliberately *not* what MFA writes; compare against MFA with `--no-refine`.
@@ -116,7 +132,8 @@ utterances containing multi-pronunciation words from the boundary statistics and
 many were excluded. Do not average this away silently.
 
 **RNG-dependent steps.** Gaussian splitting perturbs means with random noise, `EqualAlign`
-picks a random path, and LDA/MLLT accumulation prunes randomly (`random_prune = 4.0`). viter
+draws the optional silences at random (viter's walk is deterministic,
+[TRAINING.md](TRAINING.md)), and LDA/MLLT accumulation prunes randomly (`random_prune = 4.0`). viter
 uses a seeded `Xoshiro256PlusPlus`, so viter is reproducible against itself, but its stream
 is not Kaldi's. Total log-likelihood and leaf counts are robust to this; individual Gaussian
 means are not, so never compare those directly.

@@ -11,10 +11,15 @@
 //! the trained model depends on the draw: on TIMIT the monophone model's boundaries within
 //! 10 ms of the hand labels varied from 52% to 58% across seeds, with a tenth of the
 //! utterances failing the first alignment on bad draws. MFA itself sees one fixed draw
-//! (`srand(1234)` before every utterance). Here the emitting choice is the smallest forward
-//! step, so every phone visits all of its states and the frames are split between them;
-//! only the optional silences are still drawn at random, as in Kaldi. That gives 57-58%
-//! whatever the seed, with no first-iteration failures.
+//! (`srand(1234)` before every utterance). Here the walk is deterministic: the emitting
+//! choice is the smallest forward step, so every phone visits all of its states and the
+//! frames are split between them, and every optional silence is taken, so each word
+//! boundary starts with a silence hypothesis the first real alignment can shrink to
+//! nothing. That gives 57-58% whatever the seed, with no first-iteration failures;
+//! drawing the silences at random instead (Kaldi's choice) gave 54-57%, and never taking
+//! them 53-54% — the flat start's consistency across utterances matters more than the
+//! truth of any one segmentation. An utterance with fewer frames than that path needs
+//! falls back to Kaldi's random walk, whose skips can shorten the path.
 
 use crate::hmm::{Graph, NO_WORD, TransitionModel};
 use crate::types::{Alignment, TransitionId, WordId};
@@ -32,9 +37,12 @@ fn find_self_loop(graph: &Graph, state: u32) -> Option<usize> {
         .position(|a| a.next == state && a.tid != 0)
 }
 
-/// The arc out of `state` that advances its HMM by the fewest states, if it has emitting
-/// arcs: the flat start walks every state of every phone (see the module doc). The silence
-/// topology has backward arcs, so only forward steps count.
+/// The first arc out of `state` that advances its HMM by the fewest states, if it has
+/// emitting arcs: the flat start walks every state of every phone (see the module doc).
+/// The silence topology has backward arcs, so only forward steps count. A word's last
+/// phone has one copy of its HMM per right context, emitted silence-context first
+/// (`hmm::graph` `emit_word`), so the first of equal steps is the copy the optional
+/// silence follows.
 fn smallest_forward_step(graph: &Graph, tm: &TransitionModel, state: u32) -> Option<usize> {
     let mut best: Option<(usize, usize)> = None; // (destination hmm state, arc index)
     for (i, a) in graph.states[state as usize].arcs.iter().enumerate() {
@@ -53,9 +61,16 @@ fn smallest_forward_step(graph: &Graph, tm: &TransitionModel, state: u32) -> Opt
     best.map(|b| b.1)
 }
 
+/// At a state with only epsilon arcs (an optional-silence junction) the silence branch:
+/// `hmm::graph` emits the direct arc first and the silence arc second.
+fn silence_branch(graph: &Graph, state: u32) -> Option<usize> {
+    let arcs = &graph.states[state as usize].arcs;
+    (arcs.len() > 1 && arcs.iter().all(|a| a.tid == 0)).then_some(1)
+}
+
 /// Kaldi `EqualAlign`: build an alignment of exactly `num_frames` frames by choosing a
-/// path through the graph (emitting arcs: the smallest forward step; optional silences:
-/// at random) and padding it with self-loops.
+/// path through the graph (every HMM state, every optional silence; Kaldi's random walk
+/// when that does not fit) and padding it with self-loops.
 ///
 /// Returns `None` if even the shortest randomly drawn path is longer than `num_frames`, or if the
 /// path has no self-loops to lengthen it with.
@@ -78,7 +93,11 @@ pub fn equal_align(
     let mut attempted: Vec<usize> = Vec::new();
 
     let mut ended_final = false;
-    for _ in 0..NUM_RETRIES {
+    // The first draws walk every state; if none of them fits the utterance (fewer
+    // frames than the phones' states), fall back to Kaldi's random walk, whose skips
+    // can make the path shorter.
+    for attempt in 0..2 * NUM_RETRIES {
+        let walk_every_state = attempt < NUM_RETRIES;
         num_ilabels = 0;
         arc_offsets.clear();
         path.clear();
@@ -102,7 +121,9 @@ pub fn equal_align(
             if steps > max_steps {
                 break;
             }
-            let offset = smallest_forward_step(graph, tm, s)
+            let offset = walk_every_state
+                .then(|| smallest_forward_step(graph, tm, s).or_else(|| silence_branch(graph, s)))
+                .flatten()
                 .unwrap_or_else(|| rng.random_range(0..num_arcs_tot));
             if offset < num_arcs {
                 let arc = graph.states[s as usize].arcs[offset];
