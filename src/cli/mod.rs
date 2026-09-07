@@ -262,6 +262,25 @@ pub fn ensure_parent(path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Peak resident set size of this process, from /proc on Linux, as a human string.
+/// Returns None where unavailable.
+pub fn peak_rss() -> Option<String> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let kb: u64 = status
+        .lines()
+        .find(|l| l.starts_with("VmHWM:"))?
+        .split_whitespace()
+        .nth(1)?
+        .parse()
+        .ok()?;
+    Some(if kb >= 1024 * 1024 {
+        format!("{:.1} GB", kb as f64 / (1024.0 * 1024.0))
+    } else {
+        format!("{} MB", kb / 1024)
+    })
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -298,22 +317,4 @@ mod tests {
         use clap::CommandFactory;
         Cli::command().debug_assert();
     }
-}
-
-/// Peak resident set size of this process, from /proc on Linux, as a human string.
-/// Returns None where unavailable.
-pub fn peak_rss() -> Option<String> {
-    let status = std::fs::read_to_string("/proc/self/status").ok()?;
-    let kb: u64 = status
-        .lines()
-        .find(|l| l.starts_with("VmHWM:"))?
-        .split_whitespace()
-        .nth(1)?
-        .parse()
-        .ok()?;
-    Some(if kb >= 1024 * 1024 {
-        format!("{:.1} GB", kb as f64 / (1024.0 * 1024.0))
-    } else {
-        format!("{} MB", kb / 1024)
-    })
 }

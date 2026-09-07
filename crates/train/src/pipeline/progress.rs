@@ -493,7 +493,7 @@ mod tests {
 
     #[test]
     fn duration_and_grouping() {
-        assert_eq!(fmt_duration(Duration::from_secs_f64(3.14)), "3.1s");
+        assert_eq!(fmt_duration(Duration::from_secs_f64(3.16)), "3.2s");
         assert_eq!(fmt_duration(Duration::from_secs(90)), "1m30s");
         assert_eq!(fmt_duration(Duration::from_secs(3725)), "1h02m");
         assert_eq!(group(15023), "15,023");
