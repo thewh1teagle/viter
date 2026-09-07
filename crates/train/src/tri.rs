@@ -18,9 +18,9 @@ use viter_kaldi::tree::{
 use viter_kaldi::types::{Alignment, Feats, PhoneId};
 
 use crate::config::{GaussianSchedule, Stage, TriConfig};
+use crate::pipeline::iterate::run_iterations_cached;
 use crate::pipeline::{
     FeatureKind, GraphSet, IterationPlan, NoHooks, StageCtx, StageOutput, UpdateOptions,
-    run_iterations,
 };
 
 /// Kaldi triphone context: N = 3, P = 1.
@@ -409,7 +409,7 @@ fn install_and_train(
     bar.finish();
 
     let derive = |c: &StageCtx<'_>, u: &[usize]| c.feats.feats_for_many(u, FeatureKind::Deltas);
-    run_iterations(ctx, plan, &mut NoHooks, &derive, &mut graphs, converted)
+    run_iterations_cached(ctx, plan, &mut NoHooks, &derive, &mut graphs, converted)
 }
 
 /// Groups of phones sharing a tree root: all position variants of one base phone.

@@ -67,7 +67,11 @@ fn score_pdfs(
     workgroupBarrier();
 
     let s = wg.y * PDFS_PER_WG + lid.y;
-    let f0 = lid.x * FRAMES_PER_THREAD;
+    // Adjacent lanes read adjacent frame rows. With contiguous four-frame blocks,
+    // a 40-dimensional model gives a shared-memory lane stride of 336 floats:
+    // only two of 32 starting banks are used, causing four-way bank conflicts.
+    // Interleaving each lane's four frames keeps the arithmetic per frame intact.
+    let f0 = lid.x;
     if (frame_base + f0 >= frames || s >= nsel) {
         return;
     }
@@ -76,9 +80,9 @@ fn score_pdfs(
     let lo = seg_start[pdf];
     let hi = seg_end[pdf];
     let a0 = f0 * w4;
-    let a1 = a0 + w4;
-    let a2 = a1 + w4;
-    let a3 = a2 + w4;
+    let a1 = a0 + FRAME_THREADS * w4;
+    let a2 = a1 + FRAME_THREADS * w4;
+    let a3 = a2 + FRAME_THREADS * w4;
 
     var mx = vec4<f32>(NEG_INF);
     var sum = vec4<f32>(0.0);
@@ -154,7 +158,7 @@ fn score_pdfs(
     let frame = frame_base + f0;
     let base = job.out_off + frame * nsel + s;
     scores[base] = result.x;
-    if (frame + 1u < frames) { scores[base + nsel] = result.y; }
-    if (frame + 2u < frames) { scores[base + 2u * nsel] = result.z; }
-    if (frame + 3u < frames) { scores[base + 3u * nsel] = result.w; }
+    if (frame + FRAME_THREADS < frames) { scores[base + FRAME_THREADS * nsel] = result.y; }
+    if (frame + 2u * FRAME_THREADS < frames) { scores[base + 2u * FRAME_THREADS * nsel] = result.z; }
+    if (frame + 3u * FRAME_THREADS < frames) { scores[base + 3u * FRAME_THREADS * nsel] = result.w; }
 }

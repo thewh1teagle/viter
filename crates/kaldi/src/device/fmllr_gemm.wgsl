@@ -58,6 +58,12 @@ fn fmllr_gemm(
     let chunk = wg.z / (dim + 1u);
     let layer = wg.z - chunk * (dim + 1u);
     let is_k = layer == dim;
+    // A tile strictly below the diagonal cannot contribute any stored entry.
+    // Skip its frame loads and barriers too; the host mirrors the upper half.
+    // This condition is uniform for the entire workgroup.
+    if (!is_k && wg.x > wg.y) {
+        return;
+    }
     // This chunk's frame range.
     let t_begin = chunk * par.chunk_frames;
     let frames = min(par.frames, t_begin + par.chunk_frames);

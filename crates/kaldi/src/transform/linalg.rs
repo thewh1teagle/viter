@@ -194,6 +194,7 @@ pub(crate) fn invert(a: MatRef<'_, f64>) -> Mat<f64> {
 }
 
 /// Kaldi `Matrix::Invert(&logdet)`: returns `(inverse, log|det|)`.
+#[cfg(test)]
 pub(crate) fn invert_with_logdet(a: MatRef<'_, f64>) -> (Mat<f64>, f64) {
     sequential();
     let lu = a.partial_piv_lu();

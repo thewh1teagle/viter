@@ -258,3 +258,168 @@ fn pronunciation_alternative_is_recovered() {
         .collect();
     assert_eq!(phones, vec![3]);
 }
+
+/// Equal-cost parallel arcs must retain the first pronunciation, and epsilon
+/// recombination must retain the first path that reached a state (LIFO closure).
+#[test]
+fn recombination_preserves_ties_and_epsilon_word_labels() {
+    use crate::hmm::{Arc, GraphState, NO_PRON};
+    let (tm, _, _) = setup();
+    let arc = |tid, next, word, pron| Arc {
+        tid,
+        next,
+        word,
+        pron,
+        cost: 0.0,
+        lm: 0.0,
+    };
+    let mut graph = Graph::default();
+    graph.states = vec![
+        GraphState {
+            arcs: vec![arc(1, 1, 7, 0), arc(1, 1, 7, 1)],
+        },
+        GraphState {
+            arcs: vec![arc(0, 2, NO_WORD, NO_PRON), arc(0, 3, NO_WORD, NO_PRON)],
+        },
+        GraphState {
+            arcs: vec![arc(0, 4, 8, 0)],
+        },
+        GraphState {
+            arcs: vec![arc(0, 4, 8, 1)],
+        },
+        GraphState::default(),
+    ];
+    graph.finals.push((4, 0.0));
+    let result = align(
+        &graph,
+        &tm,
+        &Array2::zeros((1, 1)),
+        &|_| 0,
+        &AlignOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(result.tids, vec![1]);
+    assert_eq!(result.words, vec![7, 8]);
+    assert_eq!(result.prons, vec![0, 1]);
+    assert_eq!(result.loglike.to_bits(), (-0.0f32).to_bits());
+}
+
+/// A better epsilon path can replace a token after descendants already refer
+/// to it. Backpointers must remain immutable, even while state costs change.
+#[test]
+fn epsilon_replacement_does_not_rewrite_existing_descendants() {
+    use crate::hmm::{Arc, GraphState};
+    let (tm, _, _) = setup();
+    let arc = |next, cost, word| Arc {
+        tid: 0,
+        next,
+        word,
+        pron: 0,
+        cost,
+        lm: cost,
+    };
+    let mut graph = Graph::default();
+    graph.states = vec![
+        GraphState {
+            arcs: vec![arc(1, 0.0, 1), arc(2, 5.0, 2)],
+        },
+        GraphState {
+            arcs: vec![arc(2, 0.0, 3)],
+        },
+        GraphState {
+            arcs: vec![arc(3, 0.0, 4)],
+        },
+        GraphState::default(),
+    ];
+    graph.finals.push((3, 0.0));
+    let opts = AlignOptions::default();
+    let prepared = PreparedGraph::new(&graph, &tm, &|_| 0);
+    let mut decoder = Decoder::new(&prepared, &opts, opts.beam);
+    let start = decoder.arena.push(Token {
+        prev: usize::MAX,
+        arc: usize::MAX,
+        ac_cost: 0.0,
+    });
+    decoder.cur.slot[0] = start;
+    decoder.cur.cost[0] = 0.0;
+    decoder.cur.states.push(0);
+    decoder.process_nonemitting(f64::INFINITY);
+    let old_descendant = decoder
+        .arena
+        .toks
+        .iter()
+        .find(|token| token.arc != usize::MAX && prepared.arcs[token.arc].0.next == 3)
+        .unwrap();
+    let old_parent = decoder.arena.toks[old_descendant.prev];
+    assert_eq!(prepared.arcs[old_parent.arc].0.word, 2);
+    let current = decoder.arena.toks[decoder.cur.slot[3]];
+    let current_parent = decoder.arena.toks[current.prev];
+    assert_eq!(prepared.arcs[current_parent.arc].0.word, 3);
+    assert_eq!(decoder.cur.cost[3], 0.0);
+}
+
+/// Compare the adaptive cutoff to a full-sort oracle over many tied frontiers.
+/// This covers both min-active widening and max-active narrowing independently
+/// of any graph/score fixture, including impossible min-active requirements.
+#[test]
+fn adaptive_cutoff_matches_sorted_frontiers() {
+    let (tm, _, _) = setup();
+    let mut graph = Graph::default();
+    graph.states.resize(100, Default::default());
+    let prepared = PreparedGraph::new(&graph, &tm, &|_| 0);
+    for n in [0, 1, 8, 20, 21, 40, 100] {
+        for min in [0, 1, 20, 99, 100] {
+            for max in [0, 1, 20, 100, usize::MAX] {
+                for beam in [0.0, 0.5, 10.0, 40.0] {
+                    let opts = AlignOptions {
+                        min_active: min,
+                        max_active: max,
+                        beam,
+                        ..Default::default()
+                    };
+                    let mut d = Decoder::new(&prepared, &opts, beam);
+                    for s in 0..n {
+                        d.cur.states.push(s as u32);
+                        d.cur.cost[s] = ((s * 17 + n) % 31) as f64;
+                    }
+                    let mut sorted = d.cur.cost[..n].to_vec();
+                    sorted.sort_by(f64::total_cmp);
+                    let best = sorted.first().copied().unwrap_or(f64::INFINITY);
+                    let ordinary = best + beam as f64;
+                    let max_cutoff = sorted.get(max).copied().unwrap_or(f64::INFINITY);
+                    let min_cutoff = if n > min {
+                        if min == 0 {
+                            best
+                        } else if min < n.min(max) {
+                            sorted[min]
+                        } else {
+                            f64::INFINITY
+                        }
+                    } else {
+                        f64::INFINITY
+                    };
+                    let expected = if max == usize::MAX && min == 0 {
+                        (ordinary, beam)
+                    } else if max_cutoff < ordinary {
+                        (max_cutoff, (max_cutoff - best) as f32 + opts.beam_delta)
+                    } else if min_cutoff > ordinary {
+                        (min_cutoff, (min_cutoff - best) as f32 + opts.beam_delta)
+                    } else {
+                        (ordinary, beam)
+                    };
+                    let got = d.get_cutoff();
+                    assert_eq!(
+                        got.0.to_bits(),
+                        expected.0.to_bits(),
+                        "n={n} min={min} max={max} beam={beam}"
+                    );
+                    assert_eq!(
+                        got.1.to_bits(),
+                        expected.1.to_bits(),
+                        "n={n} min={min} max={max} beam={beam}"
+                    );
+                }
+            }
+        }
+    }
+}

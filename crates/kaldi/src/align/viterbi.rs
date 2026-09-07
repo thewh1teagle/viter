@@ -7,9 +7,9 @@
 //! `max_active` / `min_active` adaptive beam. On failure to reach a final state, alignment is
 //! retried with `retry_beam`, exactly as `gmm_align_compiled` does.
 
-use crate::hmm::{Graph, NO_PRON, NO_WORD, TransitionModel};
+use crate::hmm::{Graph, NO_WORD, TransitionModel};
 use crate::types::{Alignment, PdfId, TransitionId, WordId};
-use ndarray::Array2;
+use ndarray::{Array2, ArrayView1};
 
 /// Kaldi `FasterDecoderOptions` plus the alignment-level retry beam.
 #[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
@@ -38,25 +38,52 @@ impl Default for AlignOptions {
     }
 }
 
-/// A decoding token: a backpointer plus the accumulated cost.
-#[derive(Clone, Copy, Debug)]
-struct Token {
-    /// Index of the previous token in the arena, or `usize::MAX` for the start token.
-    prev: usize,
-    tid: TransitionId,
-    word: WordId,
-    /// Pronunciation index chosen by the arc that produced this token, or [`NO_PRON`].
-    pron: u32,
-    /// Total cost (graph + scaled acoustic) of the best path to this token.
-    cost: f64,
-    /// Acoustic part of the arc that produced this token, needed to split the final cost.
-    ac_cost: f64,
-    /// Graph part of that arc.
-    graph_cost: f64,
+/// The static arc data and score column are resolved once, including across retries.
+/// Emitting and epsilon arcs retain their original relative order within each state.
+struct PreparedGraph<'a> {
+    graph: &'a Graph,
+    arcs: Vec<(crate::hmm::Arc, usize)>,
+    /// `(start, end of emitting arcs, end of epsilon arcs)` per graph state.
+    ranges: Vec<(usize, usize, usize)>,
 }
 
-/// Arena of tokens for one decoding run. Tokens are never freed during a run; utterance graphs
-/// are small (O(#phones)) so this is cheaper than Kaldi's reference counting.
+impl<'a> PreparedGraph<'a> {
+    fn new(graph: &'a Graph, tm: &TransitionModel, pdf_col: &dyn Fn(PdfId) -> usize) -> Self {
+        let mut arcs = Vec::new();
+        let mut ranges = Vec::with_capacity(graph.num_states());
+        for state in &graph.states {
+            let start = arcs.len();
+            for &arc in &state.arcs {
+                if arc.tid != 0 {
+                    arcs.push((arc, pdf_col(tm.transition_id_to_pdf(arc.tid))));
+                }
+            }
+            let emitting_end = arcs.len();
+            for &arc in &state.arcs {
+                if arc.tid == 0 {
+                    arcs.push((arc, 0));
+                }
+            }
+            ranges.push((start, emitting_end, arcs.len()));
+        }
+        Self {
+            graph,
+            arcs,
+            ranges,
+        }
+    }
+}
+
+/// Only candidates that win recombination enter the arena. Arc labels/costs live in PreparedGraph;
+/// accumulated costs live in Active so the hot loop does not read the traceback arena.
+#[derive(Clone, Copy, Debug)]
+struct Token {
+    prev: usize,
+    arc: usize,
+    /// Scaling is performed in f32, exactly as in DecodableAmDiagGmmScaled.
+    ac_cost: f32,
+}
+
 struct Arena {
     toks: Vec<Token>,
 }
@@ -73,9 +100,8 @@ impl Arena {
 
 /// The active token set for one frame: at most one token per graph state.
 struct Active {
-    /// `slot[state]` is an index into `Arena::toks`, or `usize::MAX` if the state is inactive.
     slot: Vec<usize>,
-    /// The states that are currently active, so we can iterate without scanning `slot`.
+    cost: Vec<f64>,
     states: Vec<u32>,
 }
 
@@ -83,6 +109,7 @@ impl Active {
     fn new(num_states: usize) -> Self {
         Self {
             slot: vec![usize::MAX; num_states],
+            cost: vec![f64::INFINITY; num_states],
             states: Vec::new(),
         }
     }
@@ -96,25 +123,23 @@ impl Active {
         let i = self.slot[state as usize];
         (i != usize::MAX).then_some(i)
     }
-    /// Insert a token, keeping the cheaper one if the state is already occupied.
-    /// Returns `true` if the stored token is the newly supplied one.
-    fn insert(&mut self, arena: &Arena, state: u32, tok: usize) -> bool {
-        let cur = self.slot[state as usize];
-        if cur == usize::MAX {
-            self.slot[state as usize] = tok;
+    /// Do not allocate traceback storage for candidates that lose recombination.
+    /// Strict comparison preserves the first path on ties, including epsilon paths.
+    fn insert(&mut self, arena: &mut Arena, state: u32, token: Token, cost: f64) -> bool {
+        let s = state as usize;
+        if self.slot[s] == usize::MAX {
             self.states.push(state);
-            true
-        } else if arena.toks[tok].cost < arena.toks[cur].cost {
-            self.slot[state as usize] = tok;
-            true
-        } else {
-            false
+        } else if cost.partial_cmp(&self.cost[s]) != Some(std::cmp::Ordering::Less) {
+            return false;
         }
+        self.slot[s] = arena.push(token);
+        self.cost[s] = cost;
+        true
     }
 }
 
 struct Decoder<'a> {
-    graph: &'a Graph,
+    graph: &'a PreparedGraph<'a>,
     opts: &'a AlignOptions,
     beam: f32,
     arena: Arena,
@@ -125,8 +150,8 @@ struct Decoder<'a> {
 }
 
 impl<'a> Decoder<'a> {
-    fn new(graph: &'a Graph, opts: &'a AlignOptions, beam: f32) -> Self {
-        let n = graph.num_states();
+    fn new(graph: &'a PreparedGraph<'a>, opts: &'a AlignOptions, beam: f32) -> Self {
+        let n = graph.graph.num_states();
         Self {
             graph,
             opts,
@@ -145,7 +170,7 @@ impl<'a> Decoder<'a> {
         let mut best_state = None;
         if self.opts.max_active == usize::MAX && self.opts.min_active == 0 {
             for &s in &self.cur.states {
-                let c = self.arena.toks[self.cur.slot[s as usize]].cost;
+                let c = self.cur.cost[s as usize];
                 if c < best_cost {
                     best_cost = c;
                     best_state = Some(s);
@@ -156,7 +181,7 @@ impl<'a> Decoder<'a> {
 
         self.tmp.clear();
         for &s in &self.cur.states {
-            let c = self.arena.toks[self.cur.slot[s as usize]].cost;
+            let c = self.cur.cost[s as usize];
             self.tmp.push(c);
             if c < best_cost {
                 best_cost = c;
@@ -175,6 +200,19 @@ impl<'a> Decoder<'a> {
         if max_active_cutoff < beam_cutoff {
             let adaptive = (max_active_cutoff - best_cost) as f32 + self.opts.beam_delta;
             return (max_active_cutoff, adaptive, best_state);
+        }
+        // Usually the ordinary beam already retains min_active tokens. Establish
+        // that with an early-exit count instead of partitioning the whole frontier
+        // every frame; nth-element is only needed when the beam must be widened.
+        if (self.tmp.len() <= self.opts.max_active || self.opts.min_active < self.opts.max_active)
+            && self
+                .tmp
+                .iter()
+                .filter(|&&c| c <= beam_cutoff)
+                .nth(self.opts.min_active)
+                .is_some()
+        {
+            return (beam_cutoff, self.beam, best_state);
         }
         if self.tmp.len() > self.opts.min_active {
             if self.opts.min_active == 0 {
@@ -213,28 +251,23 @@ impl<'a> Decoder<'a> {
             let Some(tok_idx) = self.cur.get(state) else {
                 continue;
             };
-            let tok_cost = self.arena.toks[tok_idx].cost;
+            let tok_cost = self.cur.cost[state as usize];
             if tok_cost > cutoff {
                 continue;
             }
-            for arc in &self.graph.states[state as usize].arcs {
-                if arc.tid != 0 {
-                    continue;
-                }
+            let (_, start, end) = self.graph.ranges[state as usize];
+            for arc_idx in start..end {
+                let arc = &self.graph.arcs[arc_idx].0;
                 let cost = tok_cost + arc.cost as f64;
                 if cost > cutoff {
                     continue;
                 }
-                let new_tok = self.arena.push(Token {
+                let token = Token {
                     prev: tok_idx,
-                    tid: 0,
-                    word: arc.word,
-                    pron: arc.pron,
-                    cost,
+                    arc: arc_idx,
                     ac_cost: 0.0,
-                    graph_cost: arc.cost as f64,
-                });
-                if self.cur.insert(&self.arena, arc.next, new_tok) {
+                };
+                if self.cur.insert(&mut self.arena, arc.next, token, cost) {
                     self.queue.push(arc.next);
                 }
             }
@@ -242,19 +275,16 @@ impl<'a> Decoder<'a> {
     }
 
     /// Kaldi `ProcessEmitting`. Returns the cutoff to use for the following nonemitting pass.
-    fn process_emitting(&mut self, loglikes: &dyn Fn(TransitionId) -> f32) -> f64 {
+    fn process_emitting(&mut self, row: ArrayView1<'_, f32>) -> f64 {
         let (weight_cutoff, adaptive_beam, best_state) = self.get_cutoff();
         let mut next_cutoff = f64::INFINITY;
 
         // Process the best token first for a tight bound on the next cutoff.
         if let Some(state) = best_state {
-            let tok_idx = self.cur.slot[state as usize];
-            let tok_cost = self.arena.toks[tok_idx].cost;
-            for arc in &self.graph.states[state as usize].arcs {
-                if arc.tid == 0 {
-                    continue;
-                }
-                let ac_cost = -loglikes(arc.tid) as f64;
+            let tok_cost = self.cur.cost[state as usize];
+            let (start, end, _) = self.graph.ranges[state as usize];
+            for &(arc, col) in &self.graph.arcs[start..end] {
+                let ac_cost = -(self.opts.acoustic_scale * row[col]) as f64;
                 let w = arc.cost as f64 + tok_cost + ac_cost;
                 if w + (adaptive_beam as f64) < next_cutoff {
                     next_cutoff = w + adaptive_beam as f64;
@@ -271,29 +301,24 @@ impl<'a> Decoder<'a> {
             if tok_idx == usize::MAX {
                 continue;
             }
-            let tok_cost = self.arena.toks[tok_idx].cost;
+            let tok_cost = self.cur.cost[state as usize];
             if tok_cost >= weight_cutoff {
                 continue; // pruned
             }
-            for arc in &self.graph.states[state as usize].arcs {
-                if arc.tid == 0 {
-                    continue;
-                }
-                let ac_cost = -loglikes(arc.tid) as f64;
+            let (start, end, _) = self.graph.ranges[state as usize];
+            for arc_idx in start..end {
+                let (arc, col) = &self.graph.arcs[arc_idx];
+                let ac_cost = -(self.opts.acoustic_scale * row[*col]) as f64;
                 let w = arc.cost as f64 + tok_cost + ac_cost;
                 if w >= next_cutoff {
                     continue;
                 }
-                let new_tok = self.arena.push(Token {
+                let token = Token {
                     prev: tok_idx,
-                    tid: arc.tid,
-                    word: arc.word,
-                    pron: arc.pron,
-                    cost: w,
-                    ac_cost,
-                    graph_cost: arc.cost as f64,
-                });
-                self.next.insert(&self.arena, arc.next, new_tok);
+                    arc: arc_idx,
+                    ac_cost: ac_cost as f32,
+                };
+                self.next.insert(&mut self.arena, arc.next, token, w);
                 if w + (adaptive_beam as f64) < next_cutoff {
                     next_cutoff = w + adaptive_beam as f64;
                 }
@@ -306,21 +331,23 @@ impl<'a> Decoder<'a> {
     }
 
     fn reached_final(&self) -> bool {
-        self.cur.states.iter().any(|&s| {
-            self.graph.is_final(s) && self.arena.toks[self.cur.slot[s as usize]].cost.is_finite()
-        })
+        self.cur
+            .states
+            .iter()
+            .any(|&s| self.graph.graph.is_final(s) && self.cur.cost[s as usize].is_finite())
     }
 
     /// Kaldi `GetBestPath`, restricted to final states when one was reached.
     fn best_token(&self) -> Option<(usize, f64)> {
         let mut best: Option<(usize, f64)> = None;
-        if self.reached_final() {
+        let reached_final = self.reached_final();
+        if reached_final {
             for &s in &self.cur.states {
-                let Some(fc) = self.graph.final_cost(s) else {
+                let Some(fc) = self.graph.graph.final_cost(s) else {
                     continue;
                 };
                 let idx = self.cur.slot[s as usize];
-                let cost = self.arena.toks[idx].cost + fc as f64;
+                let cost = self.cur.cost[s as usize] + fc as f64;
                 if cost.is_finite() && best.is_none_or(|(_, b)| cost < b) {
                     best = Some((idx, fc as f64));
                 }
@@ -328,13 +355,17 @@ impl<'a> Decoder<'a> {
         } else {
             for &s in &self.cur.states {
                 let idx = self.cur.slot[s as usize];
-                let cost = self.arena.toks[idx].cost;
-                if best.is_none_or(|(bi, _)| cost < self.arena.toks[bi].cost) {
-                    best = Some((idx, 0.0));
+                let cost = self.cur.cost[s as usize];
+                if best.is_none_or(|(_, best_cost)| cost < best_cost) {
+                    best = Some((idx, cost));
                 }
             }
         }
-        best
+        if reached_final {
+            best
+        } else {
+            best.map(|(idx, _)| (idx, 0.0))
+        }
     }
 }
 
@@ -352,7 +383,8 @@ pub fn align(
     pdf_col: &dyn Fn(PdfId) -> usize,
     opts: &AlignOptions,
 ) -> Option<Alignment> {
-    if let Some(a) = decode(graph, tm, scores, pdf_col, opts, opts.beam) {
+    let prepared = PreparedGraph::new(graph, tm, pdf_col);
+    if let Some(a) = decode(&prepared, scores, opts, opts.beam) {
         return Some(a);
     }
     if opts.retry_beam > opts.beam {
@@ -361,16 +393,14 @@ pub fn align(
             retry_beam = opts.retry_beam,
             "alignment did not reach a final state; retrying with the retry beam"
         );
-        return decode(graph, tm, scores, pdf_col, opts, opts.retry_beam);
+        return decode(&prepared, scores, opts, opts.retry_beam);
     }
     None
 }
 
 fn decode(
-    graph: &Graph,
-    tm: &TransitionModel,
+    graph: &PreparedGraph<'_>,
     scores: &Array2<f32>,
-    pdf_col: &dyn Fn(PdfId) -> usize,
     opts: &AlignOptions,
     beam: f32,
 ) -> Option<Alignment> {
@@ -380,24 +410,16 @@ fn decode(
     // Kaldi seeds the start state with a dummy token, then closes over epsilon arcs.
     let start = d.arena.push(Token {
         prev: usize::MAX,
-        tid: 0,
-        word: NO_WORD,
-        pron: NO_PRON,
-        cost: 0.0,
+        arc: usize::MAX,
         ac_cost: 0.0,
-        graph_cost: 0.0,
     });
     d.cur.slot[0] = start;
+    d.cur.cost[0] = 0.0;
     d.cur.states.push(0);
     d.process_nonemitting(f64::INFINITY);
 
     for frame in 0..num_frames {
-        let row = scores.row(frame);
-        let loglikes = |tid: TransitionId| -> f32 {
-            let pdf = tm.transition_id_to_pdf(tid);
-            opts.acoustic_scale * row[pdf_col(pdf)]
-        };
-        let cutoff = d.process_emitting(&loglikes);
+        let cutoff = d.process_emitting(scores.row(frame));
         d.process_nonemitting(cutoff);
         if d.cur.states.is_empty() {
             tracing::warn!(frame, "all tokens pruned away");
@@ -422,15 +444,16 @@ fn decode(
         if t.prev == usize::MAX {
             break; // the dummy start token carries no arc
         }
-        if t.tid != 0 {
-            tids.push(t.tid);
+        let arc = &graph.arcs[t.arc].0;
+        if arc.tid != 0 {
+            tids.push(arc.tid);
         }
-        if t.word != NO_WORD {
-            words.push(t.word);
-            prons.push(t.pron);
+        if arc.word != NO_WORD {
+            words.push(arc.word);
+            prons.push(arc.pron);
         }
-        total_ac += t.ac_cost;
-        total_graph += t.graph_cost;
+        total_ac += t.ac_cost as f64;
+        total_graph += arc.cost as f64;
         cur = t.prev;
     }
     tids.reverse();

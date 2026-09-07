@@ -43,7 +43,6 @@ pub(super) const MAX_BATCH_FRAMES: usize = 262_144;
 /// partial `K`/`G` is summed on the host in f64, so more chunks also shorten the
 /// f32 sums. The grid's z extent is `(dim + 1) * GEMM_CHUNKS`.
 const GEMM_CHUNKS: usize = 64;
-
 const TILE: u32 = 8;
 const PARAM_BYTES: u64 = 32;
 
@@ -51,6 +50,7 @@ const PARAM_BYTES: u64 = 32;
 pub(super) struct FmllrPipelines {
     ab_layout: wgpu::BindGroupLayout,
     ab: wgpu::ComputePipeline,
+    ab_cached: wgpu::ComputePipeline,
     gemm_layout: wgpu::BindGroupLayout,
     gemm: wgpu::ComputePipeline,
 }
@@ -59,20 +59,26 @@ impl FmllrPipelines {
     pub(super) fn new(device: &wgpu::Device) -> Self {
         let ab_layout = layout(device, "fmllr-ab-layout", &[false; 6], 3);
         let gemm_layout = layout(device, "fmllr-gemm-layout", &[false; 3], 2);
-        Self {
-            ab: pipeline(
+        let ab = |cache| {
+            pipeline(
                 device,
                 "fmllr_ab",
                 include_str!("fmllr.wgsl"),
                 &ab_layout,
                 "fmllr_ab",
-            ),
+                &[("CACHE_POSTERIORS", cache)],
+            )
+        };
+        Self {
+            ab: ab(0.0),
+            ab_cached: ab(1.0),
             gemm: pipeline(
                 device,
                 "fmllr_gemm",
                 include_str!("fmllr_gemm.wgsl"),
                 &gemm_layout,
                 "fmllr_gemm",
+                &[],
             ),
             ab_layout,
             gemm_layout,
@@ -129,6 +135,7 @@ fn pipeline(
     src: &str,
     bgl: &wgpu::BindGroupLayout,
     entry: &str,
+    constants: &[(&str, f64)],
 ) -> wgpu::ComputePipeline {
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some(label),
@@ -144,7 +151,10 @@ fn pipeline(
         layout: Some(&pl),
         module: &module,
         entry_point: Some(entry),
-        compilation_options: Default::default(),
+        compilation_options: wgpu::PipelineCompilationOptions {
+            constants,
+            ..Default::default()
+        },
         cache: None,
     })
 }
@@ -430,7 +440,12 @@ fn run_batch(
             label: Some("fmllr-pass"),
             timestamp_writes: None,
         });
-        pass.set_pipeline(&pipes.ab);
+        // Small speakers need the lower register footprint of the uncached pipeline.
+        pass.set_pipeline(if t >= 4096 {
+            &pipes.ab_cached
+        } else {
+            &pipes.ab
+        });
         pass.set_bind_group(0, &ab_bg, &[]);
         pass.dispatch_workgroups((t as u32).div_ceil(64).max(1), 1, 1);
         pass.set_pipeline(&pipes.gemm);

@@ -14,9 +14,10 @@ use viter_kaldi::hmm::{ContextDependency, HmmTopology, TransitionModel};
 use viter_kaldi::types::{Feats, PhoneId};
 
 use crate::config::{GaussianSchedule, MonoConfig, Stage};
+use crate::pipeline::iterate::run_iterations_cached;
 use crate::pipeline::{
     FeatureKind, GraphSet, IterationPlan, IterationSummary, ModelState, NoHooks, StageCtx,
-    StageOutput, UpdateOptions, align, chunk, run_iterations, stats,
+    StageOutput, UpdateOptions, align, chunk, stats,
 };
 
 /// Number of leading utterances whose features seed the global Gaussian.
@@ -198,7 +199,7 @@ pub fn run(ctx: &mut StageCtx<'_>, cfg: &MonoConfig) -> Result<StageOutput> {
     };
 
     let derive = |c: &StageCtx<'_>, u: &[usize]| c.feats.feats_for_many(u, FeatureKind::Deltas);
-    let alignments = run_iterations(
+    let alignments = run_iterations_cached(
         ctx,
         &mut plan,
         &mut NoHooks,

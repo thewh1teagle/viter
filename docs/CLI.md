@@ -132,13 +132,20 @@ See [VIEWER.md](VIEWER.md) for the API and keyboard shortcuts.
 
 ## Large corpora
 
-Only the base MFCCs stay in memory for a whole run: 13 floats per 10 ms frame, about
-19 MB per hour of audio. Every pass that needs derived features (deltas, spliced+LDA,
-speaker-adapted) walks the corpus in chunks of about 1.2 million frames (3.3 h), so
-peak memory is the base store plus one chunk, whatever the corpus size. On LJSpeech
-(24 h, one speaker) that is 2.3 GB for `align` and 13.5 GB for `train`, and 1000 h
-trains on a 64 GB machine in one call. The one pass still held whole is the decision
-tree statistics of a training subset, which is why `train` peaks above `align`.
+The base MFCCs stay in memory for the whole run: 13 floats per 10 ms frame, about
+19 MB per hour of audio. Passes that need derived features (deltas, spliced+LDA,
+speaker-adapted) walk chunks of about 1.2 million frames (3.3 h).
+
+Built-in training stages retain up to **2 GiB** of derived features between passes,
+reusing the same arrays while their transforms are unchanged. The cache is cleared
+after each MLLT or fMLLR update, before accumulation uses the new feature space, and
+released when the stage ends. Chunks beyond the cache budget are derived and dropped
+as they are processed, so larger corpora still stream. Alignment passes remain
+uncached. The feature working set is therefore the base store, at most 2 GiB of
+cached training features, and the current chunk with its transform temporaries.
+
+Models, decoding scores and statistics use additional memory. In particular, decision
+tree statistics cover a whole training subset and can dominate training's peak.
 
 Speaker adaptation is exact across chunks: fMLLR statistics are accumulated chunk by
 chunk and solved once per speaker, so a speaker may span chunks and a single-speaker
