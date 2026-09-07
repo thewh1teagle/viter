@@ -91,13 +91,13 @@ task inspect model=$model {
 # Serve a training TextGrid folder with audio taken from the corpus: serve [textgrids].
 task serve tg=$train_tg {
     exists target/release/viter || build
-    target/release/viter serve $1 --audio $corpus
+    target/release/viter serve $1 --audio $corpus --no-open
 }
 
 # Serve viter vs MFA side by side (tiers: words, phones, mfa words, mfa phones).
 task compare-serve {
     exists target/release/viter || build
-    target/release/viter serve data/demo-compare --port 7879
+    target/release/viter serve data/demo-compare --port 7879 --no-open
 }
 
 # Rebuild data/demo-compare from a TextGrid folder (40 files): compare-build [textgrids].
