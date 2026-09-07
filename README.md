@@ -13,8 +13,8 @@
 |---|---|---|
 | Setup | conda, Kaldi, Python | one static binary |
 | Train on LJSpeech, 23.9 h, same recipe | 42 min | **10 min** |
-| Same, short schedule | | **2 min** |
-| Phone boundaries within 20 ms of MFA | | **95.7%** |
+| Same, short schedule | — | **2 min** |
+| Phone boundaries within 20 ms of MFA | — | **95.7%** |
 | Phone boundaries within 25 ms of TIMIT hand labels, trained on TIMIT | 85.3% ([published](docs/TIMIT.md)) | **88.2%** |
 | Output | Praat TextGrids | the same TextGrids |
 | Viewer | Praat | `viter serve` |
