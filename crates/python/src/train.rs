@@ -100,8 +100,14 @@ pub fn train(
              transcripts)",
             corpus_dir.display()
         );
-        viter_train::pipeline::train(&corpus, &cfg, &device, work_dir.as_deref())
-            .context("training failed")
+        viter_train::pipeline::train_with(
+            &corpus,
+            &cfg,
+            &device,
+            work_dir.as_deref(),
+            &viter_train::pipeline::TrainOptions::default(),
+        )
+        .context("training failed")
     }))?;
     py.check_signals()?;
 

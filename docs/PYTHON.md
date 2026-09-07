@@ -47,7 +47,8 @@ viter.train(corpus_dir, out=None, *, dict=None, config=None, cpu=False, seed=Non
 ```
 
 Trains mono → tri → LDA+MLLT → SAT on `corpus_dir` and returns the model; writes it to `out`
-too if given. Every keyword mirrors the flag of the same name on `viter train` — see
+too if given. It skips the final full-corpus alignment; use `model.align_corpus` afterwards
+to write TextGrids. Every keyword mirrors the flag of the same name on `viter train` — see
 [CLI.md](CLI.md) for what each one costs and buys. `dict` omitted means phoneme-string mode:
 every token in a transcript is a phone.
 

@@ -42,8 +42,15 @@ use crate::{lda, mono, pronprob, sat, tri};
 /// Result of a training run.
 pub struct Trained {
     pub model: AcousticModel,
-    /// Final alignments over the full corpus, in `corpus.utts` order.
+    /// Successful final alignments in `corpus.utts` order; empty when the pass is skipped.
     pub alignments: Vec<Alignment>,
+}
+
+/// Output options for a training run, separate from the training recipe.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TrainOptions {
+    /// Align the full corpus with the finished model. Defaults to false.
+    pub final_alignment: bool,
 }
 
 /// The model pieces a stage reads and writes.
@@ -157,12 +164,32 @@ pub fn scatter(
     out
 }
 
-/// Train an acoustic model on a corpus.
+/// Train an acoustic model and align the full corpus with it.
+/// Use `train_with` to skip the final alignment when only the model is needed.
 pub fn train(
     corpus: &Corpus,
     cfg: &TrainConfig,
     device: &Device,
     out_dir: Option<&Path>,
+) -> Result<Trained> {
+    train_with(
+        corpus,
+        cfg,
+        device,
+        out_dir,
+        &TrainOptions {
+            final_alignment: true,
+        },
+    )
+}
+
+/// Train an acoustic model, optionally aligning the full corpus afterwards.
+pub fn train_with(
+    corpus: &Corpus,
+    cfg: &TrainConfig,
+    device: &Device,
+    out_dir: Option<&Path>,
+    opts: &TrainOptions,
 ) -> Result<Trained> {
     if corpus.utts.is_empty() {
         return Err(anyhow!("cannot train on an empty corpus"));
@@ -182,7 +209,9 @@ pub fn train(
     for spec in &schedule {
         plan.push((spec.key(), spec.cost(n, cfg)));
     }
-    plan.push(("final".to_string(), 4.0 * n as f64));
+    if opts.final_alignment {
+        plan.push(("final".to_string(), 4.0 * n as f64));
+    }
     let plan_refs: Vec<(&str, f64)> = plan.iter().map(|(k, w)| (k.as_str(), *w)).collect();
     progress.plan(&plan_refs);
     progress.stage(
@@ -288,6 +317,15 @@ pub fn train(
     }
 
     let model = build_model(&ctx)?;
+
+    if !opts.final_alignment {
+        progress.stage_done("training", "model trained");
+        progress.finish();
+        return Ok(Trained {
+            model,
+            alignments: Vec::new(),
+        });
+    }
 
     // Final pass: align the whole corpus with the finished model.
     progress.stage(
