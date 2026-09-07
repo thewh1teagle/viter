@@ -102,9 +102,46 @@ pub struct AcousticModel {
     /// Graph construction settings (self-loop scale, transition scale, ...).
     pub graph_opts: crate::hmm::GraphOptions,
 
+    /// Pronunciation and silence probabilities learned from the corpus during
+    /// training (MFA's `pronunciation_probabilities` stage). `None` for models
+    /// trained without that stage, and for models written before it existed.
+    #[serde(default)]
+    pub lexicon_probs: Option<LexiconProbs>,
+
     /// Free-form provenance: `trained_on`, `date`, `viter_version`,
     /// `num_utts`, and anything else a training run wants to record.
     pub meta: std::collections::BTreeMap<String, String>,
+}
+
+/// Per-word learned lexicon probabilities, keyed by the word string as it appears in
+/// [`crate::types::Utterance::words`]; the vector holds one entry per pronunciation
+/// index, parallel to `Utterance.prons[word]`.
+///
+/// Estimated by `viter_train::pronprob::estimate`, which replicates MFA's
+/// `compute_pronunciation_probabilities`
+/// (`plans/mfa/montreal_forced_aligner/alignment/base.py:307-535`).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct LexiconProbs {
+    /// Word -> per-pronunciation-index probabilities.
+    pub words: std::collections::HashMap<String, Vec<PronProb>>,
+    /// MFA `silence_probability`: global P(silence after a word).
+    pub silence_prob: f32,
+    /// MFA `initial_silence_probability`.
+    pub initial_silence_prob: f32,
+    /// MFA `final_silence_correction`.
+    pub final_silence_correction: f32,
+    /// MFA `final_non_silence_correction`.
+    pub final_non_silence_correction: f32,
+}
+
+/// The four per-pronunciation quantities MFA writes as columns 2..5 of a probabilistic
+/// dictionary line, mirroring [`crate::types::Pronunciation`]'s optional fields.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct PronProb {
+    pub prob: f32,
+    pub silence_after_prob: f32,
+    pub silence_before_correction: f32,
+    pub non_silence_before_correction: f32,
 }
 
 impl AcousticModel {

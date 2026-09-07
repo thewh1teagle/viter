@@ -23,10 +23,14 @@ use crate::pipeline::{
 };
 use crate::tri::{self, TreeSetup};
 
-pub fn run(ctx: &mut StageCtx<'_>, cfg: &SatConfig) -> Result<StageOutput> {
-    let utts = ctx.subset_for(Stage::Sat);
+/// Run one SAT round. `key` is the progress key ("sat", "sat_2", ...); repeated
+/// rounds each rebuild the tree from the *previous* round's model
+/// (`gmm_init_model_from_previous`) and re-estimate fMLLR from scratch, so the
+/// speaker-independent alignment model always comes from the last round.
+pub fn run(ctx: &mut StageCtx<'_>, cfg: &SatConfig, key: &str) -> Result<StageOutput> {
+    let utts = ctx.subset_for();
     ctx.progress.stage(
-        "sat",
+        key,
         &format!(
             "{} utterances, {} iterations, {} leaves",
             utts.len(),
@@ -34,6 +38,11 @@ pub fn run(ctx: &mut StageCtx<'_>, cfg: &SatConfig) -> Result<StageOutput> {
             cfg.num_leaves
         ),
     );
+
+    // A new SAT round starts from unadapted features: MFA re-aligns the subset with
+    // the previous stage's speaker-independent model before rebuilding the tree, and
+    // re-estimates fMLLR from scratch during the round's fmllr_iterations.
+    ctx.feats.clear_fmllr();
 
     // Align this stage's (larger) subset with the previous stage's model, like MFA.
     let prev_alignments: Vec<Option<Alignment>> =
@@ -89,7 +98,7 @@ pub fn run(ctx: &mut StageCtx<'_>, cfg: &SatConfig) -> Result<StageOutput> {
             |i| ctx.words_of(utts[i]),
             &m.tm,
             &m.ctx,
-            &ctx.cfg.graph,
+            &ctx.graph,
             &bar,
         )
     };
@@ -110,7 +119,7 @@ pub fn run(ctx: &mut StageCtx<'_>, cfg: &SatConfig) -> Result<StageOutput> {
     build_align_model(ctx, cfg, &utts, &alignments, &mut plan)?;
 
     ctx.progress.stage_done(
-        "sat",
+        key,
         &format!(
             "{} gaussians, {} speakers adapted",
             ctx.model().am.num_gauss(),

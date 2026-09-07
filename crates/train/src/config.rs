@@ -18,18 +18,171 @@ pub struct Stages {
     pub tri: bool,
     pub lda: bool,
     pub sat: bool,
+    /// Pronunciation-probability estimation rounds (`trainer.py:215,219-224`).
+    pub pron_probs: bool,
 }
 
 impl Default for Stages {
-    /// MFA's default pipeline is mono -> tri -> lda -> sat
-    /// (`acoustic_modeling/trainer.py:194-213`).
+    /// MFA's default pipeline is mono -> tri -> lda -> sat...
+    /// (`acoustic_modeling/trainer.py:191-236`).
     fn default() -> Self {
         Self {
             tri: true,
             lda: true,
             sat: true,
+            pron_probs: true,
         }
     }
+}
+
+/// One entry of MFA's `training_configuration` list (`trainer.py:191-236`).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub enum StageSpec {
+    Mono {
+        subset: usize,
+    },
+    Tri {
+        subset: usize,
+        num_leaves: usize,
+        max_gaussians: usize,
+    },
+    Lda {
+        subset: usize,
+        num_leaves: usize,
+        max_gaussians: usize,
+    },
+    /// A SAT round. `round` is 1-based and only used for labelling.
+    Sat {
+        round: usize,
+        subset: usize,
+        num_leaves: usize,
+        max_gaussians: usize,
+        num_iterations: usize,
+        quick: bool,
+        /// `optional: True` in MFA — skipped when the corpus is smaller than the
+        /// subset this round asks for (`trainer.py:579-583`).
+        optional: bool,
+    },
+    /// Pronunciation-probability estimation from the previous stage's alignments.
+    PronProbs {
+        round: usize,
+        subset: usize,
+        optional: bool,
+    },
+}
+
+impl StageSpec {
+    /// Stage key used for progress plan entries and `Progress::stage` calls.
+    pub fn key(&self) -> String {
+        match self {
+            StageSpec::Mono { .. } => "mono".into(),
+            StageSpec::Tri { .. } => "tri".into(),
+            StageSpec::Lda { .. } => "lda".into(),
+            StageSpec::Sat { round, .. } if *round <= 1 => "sat".into(),
+            StageSpec::Sat { round, .. } => format!("sat_{round}"),
+            StageSpec::PronProbs { round, .. } if *round <= 1 => "pronprob".into(),
+            StageSpec::PronProbs { round, .. } => format!("pronprob_{round}"),
+        }
+    }
+
+    /// The subset size this round asks for (0 = full corpus).
+    pub fn subset(&self) -> usize {
+        match self {
+            StageSpec::Mono { subset }
+            | StageSpec::Tri { subset, .. }
+            | StageSpec::Lda { subset, .. }
+            | StageSpec::Sat { subset, .. }
+            | StageSpec::PronProbs { subset, .. } => *subset,
+        }
+    }
+
+    /// `trainer.py:579-583`: an optional round is skipped once the corpus is below
+    /// the subset size it wants (MFA exits training early at that point).
+    pub fn optional(&self) -> bool {
+        match self {
+            StageSpec::Sat { optional, .. } | StageSpec::PronProbs { optional, .. } => *optional,
+            _ => false,
+        }
+    }
+
+    /// Relative cost, for the progress ETA: iterations x utterances.
+    pub fn cost(&self, num_utts: usize, cfg: &TrainConfig) -> f64 {
+        let n = match self.subset() {
+            0 => num_utts,
+            s => s.min(num_utts),
+        }
+        .max(1) as f64;
+        match self {
+            StageSpec::Mono { .. } => cfg.mono.num_iterations as f64 * n,
+            StageSpec::Tri { .. } => cfg.tri.num_iterations as f64 * n,
+            StageSpec::Lda { .. } => cfg.lda.num_iterations as f64 * n,
+            StageSpec::Sat { num_iterations, .. } => 1.5 * *num_iterations as f64 * n,
+            StageSpec::PronProbs { .. } => 2.5 * n,
+        }
+    }
+}
+
+/// MFA's default `training_configuration` (`trainer.py:191-236`), verbatim.
+pub fn default_schedule() -> Vec<StageSpec> {
+    vec![
+        StageSpec::Mono { subset: 10000 },
+        StageSpec::Tri {
+            subset: 20000,
+            num_leaves: 2000,
+            max_gaussians: 10000,
+        },
+        StageSpec::Lda {
+            subset: 20000,
+            num_leaves: 2500,
+            max_gaussians: 15000,
+        },
+        StageSpec::Sat {
+            round: 1,
+            subset: 20000,
+            num_leaves: 2500,
+            max_gaussians: 15000,
+            num_iterations: 35,
+            quick: false,
+            optional: false,
+        },
+        StageSpec::Sat {
+            round: 2,
+            subset: 50000,
+            num_leaves: 4200,
+            max_gaussians: 40000,
+            num_iterations: 35,
+            quick: false,
+            optional: false,
+        },
+        StageSpec::PronProbs {
+            round: 1,
+            subset: 50000,
+            optional: false,
+        },
+        StageSpec::Sat {
+            round: 3,
+            subset: 150000,
+            num_leaves: 5000,
+            max_gaussians: 100000,
+            num_iterations: 35,
+            quick: false,
+            optional: false,
+        },
+        StageSpec::PronProbs {
+            round: 2,
+            subset: 150000,
+            optional: true,
+        },
+        StageSpec::Sat {
+            round: 4,
+            subset: 0,
+            num_leaves: 7000,
+            max_gaussians: 150000,
+            num_iterations: 20,
+            quick: true,
+            optional: true,
+        },
+    ]
 }
 
 /// Monophone stage. `acoustic_modeling/monophone.py:166-186`.
@@ -359,6 +512,8 @@ pub struct TrainConfig {
     pub lda: LdaConfig,
     pub sat: SatConfig,
     pub stages: Stages,
+    /// MFA's `training_configuration` list. `stages` gates which entries actually run.
+    pub schedule: Vec<StageSpec>,
     /// Train each stage on MFA's per-stage utterance subset (`base.py:190-194`),
     /// then do a final full-corpus alignment. False = every stage sees everything.
     pub subset: bool,
@@ -383,6 +538,7 @@ impl Default for TrainConfig {
             lda: LdaConfig::default(),
             sat: SatConfig::default(),
             stages: Stages::default(),
+            schedule: default_schedule(),
             subset: true,
             batch_utts: 64,
         }
@@ -392,21 +548,39 @@ impl Default for TrainConfig {
 impl TrainConfig {
     /// Per-stage subset size, or 0 for "use everything". `base.py:190-194`,
     /// `base.py:210-216`: a subset at least as large as the corpus is dropped.
-    pub fn subset_for(&self, stage: Stage, num_utts: usize) -> usize {
-        if !self.subset {
-            return 0;
-        }
-        let want = match stage {
-            Stage::Mono => self.mono.subset,
-            Stage::Tri => self.tri.subset,
-            Stage::Lda => self.lda.subset,
-            Stage::Sat => self.sat.subset,
-        };
-        if want == 0 || want >= num_utts {
+    pub fn subset_size(&self, want: usize, num_utts: usize) -> usize {
+        if !self.subset || want == 0 || want >= num_utts {
             0
         } else {
             want
         }
+    }
+
+    /// The schedule with disabled stage kinds and inapplicable optional rounds
+    /// removed. `trainer.py:579-583`: an optional round whose subset the corpus
+    /// cannot fill ends training early, so everything after it is dropped too.
+    pub fn effective_schedule(&self, num_utts: usize) -> Vec<StageSpec> {
+        let mut out = Vec::new();
+        for spec in &self.schedule {
+            let enabled = match spec {
+                StageSpec::Mono { .. } => true,
+                StageSpec::Tri { .. } => self.stages.tri,
+                StageSpec::Lda { .. } => self.stages.lda,
+                StageSpec::Sat { .. } => self.stages.sat,
+                StageSpec::PronProbs { .. } => self.stages.pron_probs,
+            };
+            if !enabled {
+                // Skipping a disabled kind must not end the run (unlike MFA's
+                // early exit), so just drop this entry.
+                continue;
+            }
+            if spec.optional() && spec.subset() != 0 && spec.subset() > num_utts {
+                // MFA exits training here entirely.
+                break;
+            }
+            out.push(spec.clone());
+        }
+        out
     }
 }
 
@@ -530,14 +704,53 @@ mod tests {
     }
 
     #[test]
+    fn default_schedule_matches_mfa() {
+        let s = default_schedule();
+        let keys: Vec<String> = s.iter().map(|x| x.key()).collect();
+        assert_eq!(
+            keys,
+            vec![
+                "mono",
+                "tri",
+                "lda",
+                "sat",
+                "sat_2",
+                "pronprob",
+                "sat_3",
+                "pronprob_2",
+                "sat_4"
+            ]
+        );
+        assert_eq!(
+            s.iter().map(|x| x.subset()).collect::<Vec<_>>(),
+            vec![10000, 20000, 20000, 20000, 50000, 50000, 150000, 150000, 0]
+        );
+    }
+
+    #[test]
+    fn optional_rounds_end_the_schedule_on_a_small_corpus() {
+        // LJSpeech: 13100 utterances. MFA ran through sat_3 and stopped.
+        let cfg = TrainConfig::default();
+        let keys: Vec<String> = cfg
+            .effective_schedule(13100)
+            .iter()
+            .map(|x| x.key())
+            .collect();
+        assert_eq!(
+            keys,
+            vec!["mono", "tri", "lda", "sat", "sat_2", "pronprob", "sat_3"]
+        );
+    }
+
+    #[test]
     fn subset_larger_than_corpus_is_dropped() {
         let cfg = TrainConfig::default();
-        assert_eq!(cfg.subset_for(Stage::Mono, 500), 0);
-        assert_eq!(cfg.subset_for(Stage::Mono, 50_000), 2000);
+        assert_eq!(cfg.subset_size(2000, 500), 0);
+        assert_eq!(cfg.subset_size(2000, 50_000), 2000);
         let no = TrainConfig {
             subset: false,
             ..TrainConfig::default()
         };
-        assert_eq!(no.subset_for(Stage::Tri, 50_000), 0);
+        assert_eq!(no.subset_size(5000, 50_000), 0);
     }
 }

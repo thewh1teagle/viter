@@ -46,6 +46,14 @@ pub struct TrainArgs {
     #[arg(long)]
     pub no_tri: bool,
 
+    /// Number of SAT/fMLLR rounds (MFA's default schedule has 4)
+    #[arg(long, value_name = "N")]
+    pub sat_rounds: Option<usize>,
+
+    /// Skip the pronunciation-probability estimation rounds
+    #[arg(long)]
+    pub no_pron_probs: bool,
+
     /// Train on the full corpus at every stage instead of MFA's per-stage subsets
     #[arg(long)]
     pub no_subset: bool,
@@ -104,11 +112,27 @@ pub fn run(args: TrainArgs) -> anyhow::Result<()> {
         // which is what MFA 3.x exports by default (`uses_splices: false`).
         cfg.stages.sat = false;
     }
+    if args.no_pron_probs {
+        cfg.stages.pron_probs = false;
+    }
+    if let Some(rounds) = args.sat_rounds {
+        // Keep the first `rounds` SAT entries of the schedule; drop the rest, and any
+        // pron-prob round that would then have no SAT stage left to follow it.
+        let mut seen = 0usize;
+        cfg.schedule.retain(|s| match s {
+            viter_train::config::StageSpec::Sat { .. } => {
+                seen += 1;
+                seen <= rounds
+            }
+            viter_train::config::StageSpec::PronProbs { .. } => seen < rounds,
+            _ => true,
+        });
+    }
 
     let device = super::device(args.cpu);
 
     header("Training");
-    field("stages", stage_list(&cfg));
+    field("stages", stage_list(&cfg, corpus.utts.len()));
     field(
         "device",
         match device.adapter_name() {
@@ -167,19 +191,13 @@ pub fn run(args: TrainArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Which stages the config will run, as a `mono -> tri -> lda` chain.
-fn stage_list(cfg: &TrainConfig) -> String {
-    let mut v = vec!["mono"];
-    if cfg.stages.tri {
-        v.push("tri");
-    }
-    if cfg.stages.lda {
-        v.push("lda+mllt");
-    }
-    if cfg.stages.sat {
-        v.push("sat");
-    }
-    v.join(" -> ")
+/// Which stages the config will run, as a `mono -> tri -> lda -> sat ...` chain.
+fn stage_list(cfg: &TrainConfig, num_utts: usize) -> String {
+    cfg.effective_schedule(num_utts)
+        .iter()
+        .map(|s| s.key())
+        .collect::<Vec<_>>()
+        .join(" -> ")
 }
 
 /// Print utterance/speaker/phone counts and the worst OOV offenders.

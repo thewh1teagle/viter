@@ -28,7 +28,7 @@ pub const CONTEXT_WIDTH: usize = 3;
 pub const CENTRAL_POSITION: usize = 1;
 
 pub fn run(ctx: &mut StageCtx<'_>, cfg: &TriConfig) -> Result<StageOutput> {
-    let utts = ctx.subset_for(Stage::Tri);
+    let utts = ctx.subset_for();
     ctx.progress.stage(
         "tri",
         &format!(
@@ -168,7 +168,18 @@ pub fn build_tree_stage(
         tree::automatically_obtain_questions(&stats, &phone_sets, &[1], CENTRAL_POSITION);
     // MFA dedups the returned sets (`triphone.py:406-417`).
     let phone_questions = dedup_questions(phone_questions);
-    let questions = tree::make_questions(&phone_questions, CONTEXT_WIDTH);
+    // kalpy derives the pdf-class questions from the topology's largest state
+    // count (tree.cpp:1169): with MFA's 5-state silence that is [0],[0,1],[0,1,2],
+    // [0,1,2,3], so silence can keep one pdf per state. Capping at 3 (the
+    // non-silence count) collapsed silence onto 3 pdfs and starved the model.
+    let max_pdf_classes = m
+        .topo
+        .phones()
+        .iter()
+        .map(|&p| m.topo.num_pdf_classes(p))
+        .max()
+        .unwrap_or(3);
+    let questions = tree::make_questions_with(&phone_questions, CONTEXT_WIDTH, max_pdf_classes, 0);
     spinner.finish();
 
     let spinner = ctx.progress.spinner("build tree");
@@ -379,7 +390,7 @@ fn install_and_train(
             |i| ctx.words_of(utts[i]),
             &m.tm,
             &m.ctx,
-            &ctx.cfg.graph,
+            &ctx.graph,
             &bar,
         )
     };

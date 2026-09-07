@@ -32,8 +32,12 @@ function findScroller(container: HTMLElement): HTMLElement | null {
 export function Waveform({ file, player }: { file: FileEntry; player: PlayerRef }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const wsRef = useRef<WaveSurfer | null>(null)
-  const stopAtRef = useRef<number | null>(null)
-  const regionStartRef = useRef(0)
+  /**
+   * Interval being played after a click on a tier. `armed` flips once a time
+   * inside the interval has been observed, so a stale reading from before the
+   * seek (the previous position, or the file end) cannot cancel the new play.
+   */
+  const regionRef = useRef<{ start: number; end: number; armed: boolean } | null>(null)
   const theme = useStore((s) => s.theme)
 
   // Keep the latest zoom without re-creating the instance on every zoom change.
@@ -72,14 +76,19 @@ export function Waveform({ file, player }: { file: FileEntry; player: PlayerRef 
 
     const emit = () => player.emit(measure())
 
-    const create = (peaks?: Array<Float32Array | number[]>, duration?: number) => {
+    const create = (blob: Blob | null, peaks?: Array<Float32Array | number[]>, duration?: number) => {
       if (disposed) return
       ws = WaveSurfer.create({
         container,
         height: WAVE_HEIGHT,
-        url: audioUrl(file.id),
-        peaks,
-        duration,
+        // With the blob in hand the media element plays from memory, so a
+        // seek to a spot the browser has not buffered yet (anything earlier
+        // than where playback first started) does not stall on a range fetch.
+        // Without url/peaks the constructor schedules no load of its own,
+        // which would otherwise race with (and revoke) the blob below.
+        url: blob ? undefined : audioUrl(file.id),
+        peaks: blob ? undefined : peaks,
+        duration: blob ? undefined : duration,
         backend: "MediaElement",
         waveColor: cssVar("--chart-2", "#8a8a8a"),
         progressColor: cssVar("--primary", "#e5e5e5"),
@@ -108,37 +117,51 @@ export function Waveform({ file, player }: { file: FileEntry; player: PlayerRef 
       ws.on("scroll", emit)
       ws.on("timeupdate", (t: number) => {
         useStore.getState().setPlayhead(t)
-        // Only stop once we are inside the region: a stale timeupdate from
-        // the previous position must not cancel a fresh click.
-        const stop = stopAtRef.current
-        if (stop !== null && t >= stop && t >= regionStartRef.current) {
-          stopAtRef.current = null
+        const region = regionRef.current
+        if (!region) return
+        if (!region.armed) {
+          if (t >= region.start && t < region.end) region.armed = true
+          return
+        }
+        if (t >= region.end) {
+          regionRef.current = null
           ws?.pause()
         }
       })
       ws.on("play", () => useStore.getState().setPlaying(true))
       ws.on("pause", () => useStore.getState().setPlaying(false))
       ws.on("finish", () => {
-        stopAtRef.current = null
+        regionRef.current = null
         useStore.getState().setPlaying(false)
       })
       ws.on("error", (err: Error) => {
         if (disposed) return
         toast.error(`Could not decode ${file.id}`, { description: String(err?.message ?? err) })
       })
+      if (blob) void ws.loadBlob(blob, peaks, duration).catch(() => {})
     }
 
-    // Peaks first so the waveform paints instantly from the server summary;
-    // MediaElement backend then streams the audio without re-decoding.
-    fetchPeaks(file.id, PEAK_COLUMNS, abort.signal)
-      .then((p) => create(peaksToWaveSurfer(p.peaks), p.duration || file.duration))
-      .catch((err) => {
-        if (abort.signal.aborted || disposed) return
+    // Peaks paint the waveform from the server summary without decoding;
+    // the audio itself is fetched whole so playback never waits on the network.
+    const peaks = fetchPeaks(file.id, PEAK_COLUMNS, abort.signal).then(
+      (p) => ({ peaks: peaksToWaveSurfer(p.peaks), duration: p.duration || file.duration }),
+      (err) => {
+        if (abort.signal.aborted || disposed) throw err
         toast.warning("Peaks unavailable, decoding in the browser", {
           description: String(err?.message ?? err),
         })
-        create(undefined, file.duration)
+        return { peaks: undefined, duration: file.duration }
+      }
+    )
+    const audio = fetch(audioUrl(file.id), { signal: abort.signal })
+      .then((r) => {
+        if (!r.ok) throw new Error(`audio ${r.status}`)
+        return r.blob()
       })
+      .catch(() => null)
+    Promise.all([peaks, audio])
+      .then(([p, blob]) => create(blob, p.peaks, p.duration))
+      .catch(() => {})
 
     const impl = {
       isReady: () => ws !== null,
@@ -146,27 +169,47 @@ export function Waveform({ file, player }: { file: FileEntry; player: PlayerRef 
       seek: (time: number) => {
         const dur = ws?.getDuration() || file.duration
         if (!ws || dur <= 0) return
-        stopAtRef.current = null
+        regionRef.current = null
         ws.seekTo(clamp(time, 0, dur) / dur)
         useStore.getState().setPlayhead(clamp(time, 0, dur))
       },
       playRegion: (from: number, to: number) => {
         const dur = ws?.getDuration() || file.duration
         if (!ws || dur <= 0) return
+        const w = ws
         const start = clamp(from, 0, dur)
-        regionStartRef.current = start
-        stopAtRef.current = Math.min(to, dur)
-        ws.setTime(start)
-        useStore.getState().setPlayhead(start)
-        void ws.play()
+        const end = Math.min(to, dur)
+        const region = { start, end, armed: false }
+        regionRef.current = region
+        // Every click restarts the interval, even while it is still playing.
+        w.pause()
+        const begin = () => {
+          // A later click superseded this one while we waited for metadata.
+          if (disposed || regionRef.current !== region) return
+          w.setTime(start)
+          useStore.getState().setPlayhead(start)
+          w.play().catch((err: unknown) => {
+            if (regionRef.current === region) regionRef.current = null
+            console.warn("play failed", err)
+          })
+        }
+        // Seeking before the media element knows its duration is silently
+        // dropped, so the first click on a freshly opened file did nothing.
+        const media = w.getMediaElement()
+        if (media.readyState >= HTMLMediaElement.HAVE_METADATA) {
+          begin()
+        } else {
+          media.addEventListener("loadedmetadata", begin, { once: true })
+          if (media.networkState !== HTMLMediaElement.NETWORK_LOADING) media.load()
+        }
       },
       playPause: () => {
         if (!ws) return
-        stopAtRef.current = null
+        regionRef.current = null
         void ws.playPause()
       },
       pause: () => {
-        stopAtRef.current = null
+        regionRef.current = null
         ws?.pause()
       },
       zoomAt: (pxPerSec: number, anchorTime: number, anchorClientX?: number) => {

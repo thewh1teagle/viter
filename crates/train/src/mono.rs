@@ -24,7 +24,7 @@ use crate::pipeline::{
 const INIT_UTTERANCES: usize = 10;
 
 pub fn run(ctx: &mut StageCtx<'_>, cfg: &MonoConfig) -> Result<StageOutput> {
-    let utts = ctx.subset_for(Stage::Mono);
+    let utts = ctx.subset_for();
     ctx.progress.stage(
         "mono",
         &format!(
@@ -98,7 +98,7 @@ pub fn run(ctx: &mut StageCtx<'_>, cfg: &MonoConfig) -> Result<StageOutput> {
             |i| ctx.words_of(utts[i]),
             &m.tm,
             &m.ctx,
-            &ctx.cfg.graph,
+            &ctx.graph,
             &bar,
         )
     };

@@ -31,8 +31,8 @@ pub use features::{FeatureKind, FeatureStore};
 pub use progress::{IterationSummary, Progress};
 pub use stats::{Stats, UpdateOptions};
 
-use crate::config::{GaussianSchedule, Stage, TrainConfig};
-use crate::{lda, mono, sat, tri};
+use crate::config::{GaussianSchedule, Stage, StageSpec, TrainConfig};
+use crate::{lda, mono, pronprob, sat, tri};
 
 /// Result of a training run.
 pub struct Trained {
@@ -64,6 +64,13 @@ pub struct StageCtx<'a> {
     pub rng: Xoshiro256PlusPlus,
     /// Silence phone ids (from the corpus symbol table).
     pub silence_phones: Vec<PhoneId>,
+    /// Subset size for the stage currently running (0 = whole corpus).
+    pub stage_subset: usize,
+    /// Learned pronunciation probabilities, once a `PronProbs` round has run.
+    pub lexicon_probs: Option<crate::pronprob::LexiconProbs>,
+    /// Graph options for the stage currently running; the pron-prob round updates
+    /// the global silence probabilities here (`trainer.py` -> dictionary silence probs).
+    pub graph: viter_kaldi::hmm::GraphOptions,
     /// Current model, `None` before monophone initialization.
     pub model: Option<ModelState>,
     /// Alignments for the utterances of the stage that just finished, indexed by
@@ -96,9 +103,9 @@ impl<'a> StageCtx<'a> {
     /// that pool. We take the `subset` shortest utterances, which is the same
     /// selection without MFA's random tie-break inside the larger pool — shortest
     /// utterances align fastest and most reliably from a flat start.
-    pub fn subset_for(&self, stage: Stage) -> Vec<usize> {
+    pub fn subset_for(&self) -> Vec<usize> {
         let n = self.corpus.utts.len();
-        let want = self.cfg.subset_for(stage, n);
+        let want = self.cfg.subset_size(self.stage_subset, n);
         if want == 0 {
             return (0..n).collect();
         }
@@ -111,7 +118,16 @@ impl<'a> StageCtx<'a> {
 
     /// Candidate pronunciations per word for one utterance, as `hmm::build_graph` wants them.
     pub fn words_of(&self, utt: usize) -> Vec<Vec<Pronunciation>> {
-        self.corpus.utts[utt].prons.clone()
+        let u = &self.corpus.utts[utt];
+        match &self.lexicon_probs {
+            None => u.prons.clone(),
+            Some(probs) => u
+                .words
+                .iter()
+                .zip(&u.prons)
+                .map(|(w, prons)| crate::pronprob::apply(probs, w, prons))
+                .collect(),
+        }
     }
 }
 
@@ -135,7 +151,7 @@ pub fn align_subset_with_previous(
         |i| ctx.words_of(utts[i]),
         &m.tm,
         &m.ctx,
-        &ctx.cfg.graph,
+        &ctx.graph,
         &bar,
     );
     bar.finish();
@@ -143,10 +159,12 @@ pub fn align_subset_with_previous(
         .progress
         .bar("align (previous model)", utts.len() as u64);
     // Alignment workflows use MFA's align defaults: boost_silence 1.0 (`alignment/mixins.py:69-91`).
+    // With a SAT model the speaker-independent alignment model is the one that works
+    // on unadapted features (MFA aligns with `final.alimdl`).
     let outcome = align::align_batch(
         &graphs,
         &m.tm,
-        &m.am,
+        m.am_si.as_ref().unwrap_or(&m.am),
         ctx.device,
         &feats,
         &ctx.cfg.align,
@@ -343,28 +361,18 @@ pub fn train(
     }
 
     let progress = Progress::new();
-    // Relative cost per stage: iterations x utterances in the subset (features and
-    // the final two-pass alignment count as a few passes over everything).
     let n = corpus.utts.len();
-    let sub = |stage: Stage| match cfg.subset_for(stage, n) {
-        0 => n.max(1) as f64,
-        s => s.min(n).max(1) as f64,
-    };
-    let mut plan: Vec<(&str, f64)> = vec![
-        ("features", 2.0 * n as f64),
-        ("mono", cfg.mono.num_iterations as f64 * sub(Stage::Mono)),
-    ];
-    if cfg.stages.tri {
-        plan.push(("tri", cfg.tri.num_iterations as f64 * sub(Stage::Tri)));
+    let schedule = cfg.effective_schedule(n);
+
+    // Relative cost per stage drives the overall % and ETA; features and the final
+    // two-pass alignment count as a few passes over the whole corpus.
+    let mut plan: Vec<(String, f64)> = vec![("features".to_string(), 2.0 * n as f64)];
+    for spec in &schedule {
+        plan.push((spec.key(), spec.cost(n, cfg)));
     }
-    if cfg.stages.lda {
-        plan.push(("lda", cfg.lda.num_iterations as f64 * sub(Stage::Lda)));
-    }
-    if cfg.stages.sat {
-        plan.push(("sat", 1.5 * cfg.sat.num_iterations as f64 * sub(Stage::Sat)));
-    }
-    plan.push(("final", 4.0 * n as f64));
-    progress.plan(&plan);
+    plan.push(("final".to_string(), 4.0 * n as f64));
+    let plan_refs: Vec<(&str, f64)> = plan.iter().map(|(k, w)| (k.as_str(), *w)).collect();
+    progress.plan(&plan_refs);
     progress.stage(
         "features",
         &format!(
@@ -403,28 +411,68 @@ pub fn train(
         progress: &progress,
         rng: Xoshiro256PlusPlus::seed_from_u64(cfg.seed),
         silence_phones: corpus.silence_phones.clone(),
+        stage_subset: 0,
+        lexicon_probs: None,
+        graph: cfg.graph.clone(),
         model: None,
         alignments: vec![None; corpus.utts.len()],
     };
 
-    let out = mono::run(&mut ctx, &cfg.mono)?;
-    ctx.alignments = scatter(corpus.utts.len(), &out.utts, out.alignments);
-    save_stage(&ctx, out_dir, "mono")?;
-
-    if cfg.stages.tri {
-        let out = tri::run(&mut ctx, &cfg.tri)?;
-        ctx.alignments = scatter(corpus.utts.len(), &out.utts, out.alignments);
-        save_stage(&ctx, out_dir, "tri")?;
-    }
-    if cfg.stages.lda {
-        let out = lda::run(&mut ctx, &cfg.lda)?;
-        ctx.alignments = scatter(corpus.utts.len(), &out.utts, out.alignments);
-        save_stage(&ctx, out_dir, "lda")?;
-    }
-    if cfg.stages.sat {
-        let out = sat::run(&mut ctx, &cfg.sat)?;
-        ctx.alignments = scatter(corpus.utts.len(), &out.utts, out.alignments);
-        save_stage(&ctx, out_dir, "sat")?;
+    for spec in &schedule {
+        let key = spec.key();
+        ctx.stage_subset = spec.subset();
+        let out = match spec {
+            StageSpec::Mono { .. } => Some(mono::run(&mut ctx, &cfg.mono)?),
+            StageSpec::Tri {
+                num_leaves,
+                max_gaussians,
+                ..
+            } => Some(tri::run(
+                &mut ctx,
+                &crate::config::TriConfig {
+                    num_leaves: *num_leaves,
+                    max_gaussians: *max_gaussians,
+                    ..cfg.tri.clone()
+                },
+            )?),
+            StageSpec::Lda {
+                num_leaves,
+                max_gaussians,
+                ..
+            } => Some(lda::run(
+                &mut ctx,
+                &crate::config::LdaConfig {
+                    num_leaves: *num_leaves,
+                    max_gaussians: *max_gaussians,
+                    ..cfg.lda.clone()
+                },
+            )?),
+            StageSpec::Sat {
+                num_leaves,
+                max_gaussians,
+                num_iterations,
+                quick,
+                ..
+            } => Some(sat::run(
+                &mut ctx,
+                &crate::config::SatConfig {
+                    num_leaves: *num_leaves,
+                    max_gaussians: *max_gaussians,
+                    num_iterations: *num_iterations,
+                    quick: *quick,
+                    ..cfg.sat.clone()
+                },
+                &key,
+            )?),
+            StageSpec::PronProbs { .. } => {
+                run_pron_probs(&mut ctx, &key)?;
+                None
+            }
+        };
+        if let Some(out) = out {
+            ctx.alignments = scatter(corpus.utts.len(), &out.utts, out.alignments);
+        }
+        save_stage(&ctx, out_dir, &key)?;
     }
 
     let model = build_model(&ctx)?;
@@ -461,6 +509,130 @@ pub fn train(
     Ok(Trained { model, alignments })
 }
 
+/// MFA's `pronunciation_probabilities` round (`trainer.py:215,219`): align the
+/// round's subset with the model just trained (two-pass fMLLR when it is a SAT
+/// model), estimate per-pronunciation probabilities and the global silence
+/// probabilities from those alignments, and use them for every graph built after.
+fn run_pron_probs(ctx: &mut StageCtx<'_>, key: &str) -> Result<()> {
+    let utts = ctx.subset_for();
+    ctx.progress
+        .stage(key, &format!("{} utterances", utts.len()));
+
+    let alignments = align_for_pron_probs(ctx, &utts)?;
+
+    let probs = {
+        let m = ctx.model();
+        pronprob::estimate(
+            ctx.corpus,
+            &m.tm,
+            ctx.graph.silence_phone,
+            &utts,
+            &alignments,
+        )
+    };
+
+    // The learned global silence probabilities replace the graph defaults for every
+    // later stage, exactly as MFA writes them back onto the dictionary.
+    ctx.graph.silence_prob = probs.silence_prob;
+    ctx.graph.initial_silence_prob = probs.initial_silence_prob;
+    ctx.graph.final_silence_correction = probs.final_silence_correction;
+    ctx.graph.final_non_silence_correction = probs.final_non_silence_correction;
+
+    let words = probs.words.len();
+    ctx.lexicon_probs = Some(probs);
+    ctx.alignments = scatter(ctx.corpus.utts.len(), &utts, alignments);
+
+    ctx.progress.stage_done(
+        key,
+        &format!(
+            "{words} words · silence p={:.3} initial={:.3}",
+            ctx.graph.silence_prob, ctx.graph.initial_silence_prob
+        ),
+    );
+    Ok(())
+}
+
+/// Align a subset with the current model, including the fMLLR second pass when the
+/// model is speaker adapted. Used by the pronunciation-probability round.
+fn align_for_pron_probs(ctx: &mut StageCtx<'_>, utts: &[usize]) -> Result<Vec<Option<Alignment>>> {
+    let bar = ctx.progress.bar("graphs", utts.len() as u64);
+    let graphs = {
+        let m = ctx.model();
+        GraphSet::build(
+            utts.len(),
+            |i| ctx.words_of(utts[i]),
+            &m.tm,
+            &m.ctx,
+            &ctx.graph,
+            &bar,
+        )
+    };
+    bar.finish();
+
+    let lda = ctx.model().lda.clone();
+    let mut feats = match lda.as_ref() {
+        Some(l) => ctx.feats.feats_for_many(utts, FeatureKind::SpliceLda(l)),
+        None => ctx.feats.feats_for_many(utts, FeatureKind::Deltas),
+    };
+
+    let bar = ctx.progress.bar("align", utts.len() as u64);
+    let mut outcome = {
+        let m = ctx.model();
+        align::align_batch(
+            &graphs,
+            &m.tm,
+            m.am_si.as_ref().unwrap_or(&m.am),
+            ctx.device,
+            &feats,
+            &ctx.cfg.align,
+            ctx.cfg.batch_utts,
+            &bar,
+        )
+    };
+    bar.finish();
+
+    if ctx.model().am_si.is_some() {
+        let transforms = {
+            let m = ctx.model();
+            sat::estimate_fmllr(
+                ctx,
+                &m.tm,
+                &m.am,
+                utts,
+                &outcome.alignments,
+                &feats,
+                &ctx.cfg.sat,
+            )?
+        };
+        for (spk, t) in transforms.into_iter().enumerate() {
+            if let Some(mat) = t {
+                ctx.feats.set_fmllr(spk, mat);
+            }
+        }
+        let adapted_kind = match lda.as_ref() {
+            Some(l) => FeatureKind::SpliceLdaFmllr(l),
+            None => FeatureKind::Deltas,
+        };
+        feats = ctx.feats.feats_for_many(utts, adapted_kind);
+        let bar = ctx.progress.bar("align (fmllr)", utts.len() as u64);
+        outcome = {
+            let m = ctx.model();
+            align::align_batch(
+                &graphs,
+                &m.tm,
+                &m.am,
+                ctx.device,
+                &feats,
+                &ctx.cfg.align,
+                ctx.cfg.batch_utts,
+                &bar,
+            )
+        };
+        bar.finish();
+    }
+    Ok(outcome.alignments)
+}
+
 /// Final full-corpus alignment with the trained model, including the fMLLR two-pass
 /// when the model is speaker-adapted.
 fn final_alignment(ctx: &StageCtx<'_>, model: &AcousticModel) -> Result<Vec<Option<Alignment>>> {
@@ -471,7 +643,7 @@ fn final_alignment(ctx: &StageCtx<'_>, model: &AcousticModel) -> Result<Vec<Opti
         |i| ctx.words_of(utts[i]),
         &model.tm,
         &model.ctx,
-        &ctx.cfg.graph,
+        &ctx.graph,
         &bar,
     );
     bar.finish();
@@ -578,7 +750,8 @@ fn build_model(ctx: &StageCtx<'_>) -> Result<AcousticModel> {
         am: m.am.clone(),
         am_si: m.am_si.clone(),
         fmllr: m.am_si.as_ref().map(|_| ctx.cfg.sat.fmllr.clone()),
-        graph_opts: ctx.cfg.graph.clone(),
+        graph_opts: ctx.graph.clone(),
+        lexicon_probs: ctx.lexicon_probs.clone(),
         meta,
     })
 }
@@ -640,6 +813,14 @@ pub fn align_corpus_with(
     progress.stage("align", &format!("{} utterances", corpus.utts.len()));
 
     let mut graph = model.graph_opts.clone();
+    // A model that learned pronunciation probabilities also learned the global
+    // silence probabilities; use them unless the caller overrides.
+    if let Some(lp) = &model.lexicon_probs {
+        graph.silence_prob = lp.silence_prob;
+        graph.initial_silence_prob = lp.initial_silence_prob;
+        graph.final_silence_correction = lp.final_silence_correction;
+        graph.final_non_silence_correction = lp.final_non_silence_correction;
+    }
     if let Some(v) = over.silence_prob {
         graph.silence_prob = v;
     }
@@ -675,6 +856,9 @@ pub fn align_corpus_with(
         progress: &progress,
         rng: Xoshiro256PlusPlus::seed_from_u64(cfg.seed),
         silence_phones: model.silence_phones.clone(),
+        stage_subset: 0,
+        lexicon_probs: model.lexicon_probs.clone(),
+        graph: cfg.graph.clone(),
         model: None,
         alignments: Vec::new(),
     };
@@ -684,10 +868,10 @@ pub fn align_corpus_with(
     let bar = progress.bar("graphs", utts.len() as u64);
     let graphs = GraphSet::build(
         utts.len(),
-        |i| corpus.utts[utts[i]].prons.clone(),
+        |i| ctx.words_of(utts[i]),
         &model.tm,
         &model.ctx,
-        &cfg.graph,
+        &ctx.graph,
         &bar,
     );
     bar.finish();

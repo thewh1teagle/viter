@@ -95,6 +95,33 @@ The full corpus (not a subset) is aligned with the final model — two passes wh
 present — and those alignments are returned in `Trained.alignments`, written as TextGrids if
 `--out-textgrids` was given.
 
+## Pronunciation probabilities
+
+After a stage's alignments exist, `viter_train::pronprob::estimate` learns from them what an MFA
+probabilistic dictionary stores in its four probability columns — a port of MFA's
+`compute_pronunciation_probabilities` (`alignment/base.py:307-535`) and its counting pass
+(`alignment/multiprocessing.py:1465-1500`):
+
+| quantity | formula (MFA) | effect in `hmm::graph` |
+| --- | --- | --- |
+| `prob` | pronunciation count / the word's most-used pronunciation count, with add-one smoothing over every listed pronunciation | entry cost `|ln p|` |
+| `silence_after_prob` | `(sil_after + p_sil·λ₂) / (total_after + λ₂)`, λ₂ = 2 | splits the cost between the silence and no-silence branch after the word |
+| `silence_before_correction` | `(sil_before + λ₃) / (E[sil_before] + λ₃)`, λ₃ = 2 | `-ln c` on the incoming silence branch |
+| `non_silence_before_correction` | same with the non-silence counts | `-ln c` on the incoming no-silence branch |
+
+`E[sil_before]` is the silence count expected under the *predecessors'* own `silence_after_prob`,
+summed over observed word bigrams — so the correction says only how much a word attracts or repels
+a preceding pause beyond what its neighbours already explain. Four globals come out of the same
+counts: `silence_prob` (the corpus-wide rate of silence at a word boundary), `initial_silence_prob`,
+and the `final_silence_correction` / `final_non_silence_correction` pair for the utterance end.
+All values pass through MFA's `format_probability` (two decimals, clamped to `[0.01, 0.99]`) and
+`format_correction` (two decimals, floored at 0.01).
+
+The result is stored on the model as `AcousticModel::lexicon_probs` and applied by
+`pronprob::apply` when graphs are built for later stages and for alignment, so subsequent training
+iterations see a lexicon whose pause and variant costs came from this corpus rather than from the
+dictionary's defaults.
+
 ## Hyperparameters
 
 | | mono | tri | lda+mllt | sat |
@@ -118,6 +145,43 @@ Alignment-time defaults (`AlignOptions`, MFA `alignment/mixins.py:69-91`): `beam
 `retry_beam = 40`, `acoustic_scale = 0.1`, `transition_scale = 1.0`, `self_loop_scale = 0.1`,
 `boost_silence = 1.0`, `careful = false`. Transition MLE update: `floor = 0.01`,
 `mincount = 5.0`.
+
+## The training schedule
+
+`TrainConfig.schedule` is MFA's `training_configuration` list
+(`acoustic_modeling/trainer.py:191-236`), reproduced verbatim as `Vec<StageSpec>`:
+
+| # | stage | subset | num_leaves | max_gaussians | iterations | notes |
+|---|-------|--------|-----------|---------------|-----------|-------|
+| 1 | `mono` | 10000 | — | 1000 | 40 | boost_silence 1.25 |
+| 2 | `tri` | 20000 | 2000 | 10000 | 35 | boost_silence 1.25 |
+| 3 | `lda` | 20000 | 2500 | 15000 | 35 | LDA+MLLT |
+| 4 | `sat` | 20000 | 2500 | 15000 | 35 | first fMLLR round |
+| 5 | `sat_2` | 50000 | 4200 | 40000 | 35 | |
+| 6 | `pronprob` | 50000 | — | — | — | pronunciation + silence probabilities |
+| 7 | `sat_3` | 150000 | 5000 | 100000 | 35 | |
+| 8 | `pronprob_2` | 150000 | — | — | — | optional |
+| 9 | `sat_4` | full | 7000 | 150000 | 20 | optional, `quick` |
+
+An *optional* round whose subset the corpus cannot fill ends training there
+(`trainer.py:579-583`, MFA's "Exiting training early to save time"). LJSpeech
+(13100 utterances) therefore runs stages 1-7 and stops after `sat_3`, which is
+exactly what MFA's own `train.log` for that corpus shows.
+
+Each SAT round rebuilds its tree from the *previous* round's model
+(`gmm_init_model_from_previous`), clears the fMLLR transforms, re-aligns the round's
+subset with the previous round's speaker-independent model, and re-estimates fMLLR on
+its own `fmllr_iterations`. The exported `am_si` is therefore always the last round's.
+
+A `pronprob` round aligns its subset with the model just trained (two passes with
+fMLLR when the model is speaker-adapted), then `pronprob::estimate` derives
+per-pronunciation probabilities plus the four global silence probabilities. From that
+point every graph — later stages, the final alignment, and `viter align` with the
+saved model — is built with those costs; they travel in `AcousticModel.lexicon_probs`.
+
+CLI: `--no-tri` / `--no-lda` / `--no-sat` drop a stage kind, `--no-pron-probs` drops
+the probability rounds, and `--sat-rounds N` truncates the schedule to the first N
+SAT rounds (and the pron-prob rounds that still precede one).
 
 ## Subset logic
 

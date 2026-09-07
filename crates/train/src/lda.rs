@@ -21,7 +21,7 @@ use crate::pipeline::{
 use crate::tri::{self, TreeSetup};
 
 pub fn run(ctx: &mut StageCtx<'_>, cfg: &LdaConfig) -> Result<StageOutput> {
-    let utts = ctx.subset_for(Stage::Lda);
+    let utts = ctx.subset_for();
     ctx.progress.stage(
         "lda",
         &format!(
@@ -114,7 +114,7 @@ pub fn run(ctx: &mut StageCtx<'_>, cfg: &LdaConfig) -> Result<StageOutput> {
             |i| ctx.words_of(utts[i]),
             &m.tm,
             &m.ctx,
-            &ctx.cfg.graph,
+            &ctx.graph,
             &bar,
         )
     };

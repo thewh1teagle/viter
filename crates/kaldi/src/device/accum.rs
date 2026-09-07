@@ -612,10 +612,12 @@ fn run(
         pass.set_pipeline(&pipes.posteriors);
         pass.dispatch_workgroups((p.frames as u32).div_ceil(POST_THREADS).max(1), 1, 1);
         pass.set_pipeline(&pipes.reduce);
+        // x carries up to 65535 gaussians, z the rest (see the shader).
+        let n = (num_active as u32).max(1);
         pass.dispatch_workgroups(
-            (num_active as u32).max(1),
+            n.min(65535),
             (dim as u32).div_ceil(REDUCE_THREADS).max(1),
-            1,
+            n.div_ceil(65535),
         );
     }
     enc.copy_buffer_to_buffer(buf(14), 0, readback, 0, out_bytes);

@@ -445,6 +445,7 @@ fn build(mut files: ModelFiles) -> Result<(AcousticModel, ImportReport)> {
         am_si,
         fmllr,
         graph_opts,
+        lexicon_probs: None,
         meta: model_meta,
     };
 

@@ -101,7 +101,8 @@ fn reduce(
     @builtin(workgroup_id) wg: vec3<u32>,
     @builtin(local_invocation_id) lid: vec3<u32>,
 ) {
-    let a = wg.x;
+    // Gaussian index spread over x and z so more than 65535 fit (wgpu's per-axis limit).
+    let a = wg.x + wg.z * 65535u;
     if (a >= params.num_active) {
         return;
     }
