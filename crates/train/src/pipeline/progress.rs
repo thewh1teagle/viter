@@ -10,7 +10,8 @@
 use console::style;
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use std::io::Write;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// Optional plain-text log every `Progress` appends to (stage lines, every
@@ -33,9 +34,8 @@ fn log_line(text: &str) {
     }
 }
 
-const LIVE_TEMPLATE: &str =
-    "{prefix:>12.green.bold} {msg} {bar:24.cyan/dim} {pos}/{len} {elapsed_precise:.dim}";
-const SPIN_TEMPLATE: &str = "{prefix:>12.green.bold} {msg} {spinner:.cyan}";
+const LIVE_TEMPLATE: &str = "{prefix:>12.green.bold} [{bar:25}] {pos}/{len}: {msg}";
+const SPIN_TEMPLATE: &str = "{prefix:>12.green.bold} {spinner} {msg}";
 const VERB_WIDTH: usize = 12;
 
 /// Human verb for a stage key, right-aligned like cargo's `Compiling`.
@@ -46,6 +46,11 @@ fn verb(name: &str) -> &str {
         "tri" => "Triphone",
         "lda" => "LDA+MLLT",
         "sat" => "SAT/fMLLR",
+        "sat_2" => "SAT/fMLLR 2",
+        "sat_3" => "SAT/fMLLR 3",
+        "sat_4" => "SAT/fMLLR 4",
+        "pronprob" => "Pron probs",
+        "pronprob_2" => "Pron probs 2",
         "final" | "align" => "Aligning",
         "training" => "Trained",
         other => other,
@@ -59,7 +64,7 @@ pub struct Progress {
     /// The single live line for the current stage.
     live: ProgressBar,
     quiet: bool,
-    state: Mutex<State>,
+    state: Arc<Mutex<State>>,
 }
 
 #[derive(Default)]
@@ -95,7 +100,7 @@ impl Progress {
             multi,
             live,
             quiet,
-            state: Mutex::new(State::default()),
+            state: Arc::new(Mutex::new(State::default())),
         }
     }
 
@@ -107,7 +112,7 @@ impl Progress {
             multi,
             live,
             quiet: true,
-            state: Mutex::new(State::default()),
+            state: Arc::new(Mutex::new(State::default())),
         }
     }
 
@@ -176,34 +181,11 @@ impl Progress {
 
     /// Right-hand side of the live line: `stage 3/5 · 47% · ~2m left`.
     fn overall(&self) -> String {
-        let st = self.state.lock().unwrap();
-        if st.plan.is_empty() {
-            return String::new();
-        }
-        let total: f64 = st.plan.iter().map(|(_, w)| w).sum();
-        let idx = st.plan.iter().position(|(s, _)| *s == st.stage);
-        let cur_w = idx.map(|i| st.plan[i].1).unwrap_or(0.0);
-        let done = st.done_units + cur_w * st.stage_frac;
-        let frac = (done / total).clamp(0.0, 1.0);
-        let mut out = match idx {
-            Some(i) => format!("stage {}/{}", i + 1, st.plan.len()),
-            None => String::new(),
-        };
-        out.push_str(&format!(" · {:.0}%", frac * 100.0));
-        if let Some(t0) = st.run_started
-            && frac > 0.02
-        {
-            let elapsed = t0.elapsed().as_secs_f64();
-            let left = elapsed * (1.0 - frac) / frac;
-            out.push_str(&format!(
-                " · ~{} left",
-                fmt_duration(Duration::from_secs_f64(left))
-            ));
-        }
-        out
+        overall_of(&self.state.lock().unwrap())
     }
 
-    /// A determinate bar with `len` units of work on the live line.
+    /// A determinate bar with `len` units of work on the live line. The bar is
+    /// the count itself (used by features, graph building and alignment passes).
     pub fn bar(&self, msg: impl Into<String>, len: u64) -> Bar {
         let msg = msg.into();
         self.state.lock().unwrap().step = msg.clone();
@@ -216,12 +198,39 @@ impl Progress {
         Bar {
             pb: self.live.clone(),
             quiet: self.quiet,
+            state: Arc::clone(&self.state),
+            inner: None,
         }
     }
 
-    /// A bar labelled for one step of one iteration: "iter 12/40 · align".
+    /// A bar for one step of one iteration. The bar shows progress through the
+    /// stage's iterations (it fills once per stage); the step's own count is
+    /// shown as text, e.g. `[=====>    ] 12/35: align 4,608/13,093`.
     pub fn iter_bar(&self, _stage: &str, iter: usize, total: usize, step: &str, len: u64) -> Bar {
-        self.bar(format!("iter {iter}/{total} · {step}"), len)
+        let inner = Arc::new(InnerCount {
+            done: AtomicU64::new(0),
+            len,
+            iter,
+            total,
+        });
+        {
+            let mut st = self.state.lock().unwrap();
+            st.step = step.to_string();
+            st.stage_frac = (iter.saturating_sub(1) as f64 / total.max(1) as f64).min(1.0);
+        }
+        if !self.quiet {
+            self.live.set_style(bar_style());
+            self.live.set_length(total as u64);
+            self.live.set_position(iter.saturating_sub(1) as u64);
+            let st = self.state.lock().unwrap();
+            self.live.set_message(live_text(&st, step, Some((0, len))));
+        }
+        Bar {
+            pb: self.live.clone(),
+            quiet: self.quiet,
+            state: Arc::clone(&self.state),
+            inner: Some(inner),
+        }
     }
 
     /// A spinner for work whose size is not known up front.
@@ -235,20 +244,14 @@ impl Progress {
         Bar {
             pb: self.live.clone(),
             quiet: self.quiet,
+            state: Arc::clone(&self.state),
+            inner: None,
         }
     }
 
-    /// Live-line text: the sub-step plus the last iteration summary, dimmed, and
-    /// the overall estimate on the right.
+    /// Live-line text for a plain step.
     fn live_message(&self, step: &str) -> String {
-        let overall = self.overall();
-        let st = self.state.lock().unwrap();
-        let left = match &st.last {
-            Some(last) => format!("{step}  {}", style(last).dim()),
-            None => step.to_string(),
-        };
-        drop(st);
-        format!("{left}  {}", style(overall).cyan())
+        live_text(&self.state.lock().unwrap(), step, None)
     }
 
     /// One-line message printed above the live line (or plainly when piped).
@@ -280,8 +283,9 @@ impl Progress {
                 eprintln!("{:>w$} {}", "", s.render_long(), w = VERB_WIDTH);
             }
         } else {
-            let step = self.state.lock().unwrap().step.clone();
-            let msg = self.live_message(&step);
+            let st = self.state.lock().unwrap();
+            let msg = live_text(&st, &st.step, None);
+            drop(st);
             self.live.set_message(msg);
         }
         tracing::debug!(
@@ -354,7 +358,7 @@ impl Default for Progress {
 fn bar_style() -> ProgressStyle {
     ProgressStyle::with_template(LIVE_TEMPLATE)
         .unwrap_or_else(|_| ProgressStyle::default_bar())
-        .progress_chars("━╸ ")
+        .progress_chars("=> ")
 }
 
 fn spin_style() -> ProgressStyle {
@@ -404,21 +408,91 @@ impl IterationSummary<'_> {
     }
 }
 
+/// `stage 3/5 · 47% · ~2m left` from the shared state.
+fn overall_of(st: &State) -> String {
+    if st.plan.is_empty() {
+        return String::new();
+    }
+    let total: f64 = st.plan.iter().map(|(_, w)| w).sum();
+    let idx = st.plan.iter().position(|(s, _)| *s == st.stage);
+    let cur_w = idx.map(|i| st.plan[i].1).unwrap_or(0.0);
+    let done = st.done_units + cur_w * st.stage_frac;
+    let frac = (done / total).clamp(0.0, 1.0);
+    let mut out = match idx {
+        Some(i) => format!("stage {}/{}", i + 1, st.plan.len()),
+        None => String::new(),
+    };
+    out.push_str(&format!(" · {:.0}%", frac * 100.0));
+    if let Some(t0) = st.run_started
+        && frac > 0.02
+    {
+        let elapsed = t0.elapsed().as_secs_f64();
+        let left = elapsed * (1.0 - frac) / frac;
+        out.push_str(&format!(
+            " · ~{} left",
+            fmt_duration(Duration::from_secs_f64(left))
+        ));
+    }
+    out
+}
+
+/// Compose the live message: sub-step (with its own count when it has one),
+/// the last iteration summary, and the overall estimate.
+fn live_text(st: &State, step: &str, inner: Option<(u64, u64)>) -> String {
+    let mut s = match inner {
+        Some((n, len)) if len > 0 => format!("{step} {n}/{len}"),
+        _ => step.to_string(),
+    };
+    if let Some(last) = &st.last {
+        s.push_str(&format!(" · {}", style(last).dim()));
+    }
+    s.push_str(&format!(" · {}", style(overall_of(st)).dim()));
+    s
+}
+
 /// Handle on the live line for one step. Dropping it leaves the line in place;
 /// the next step or `stage_done` replaces it.
 pub struct Bar {
     pb: ProgressBar,
     quiet: bool,
+    state: Arc<Mutex<State>>,
+    /// Present for iteration steps: the step's own count, shown as text.
+    inner: Option<Arc<InnerCount>>,
+}
+
+struct InnerCount {
+    done: AtomicU64,
+    len: u64,
+    iter: usize,
+    total: usize,
 }
 
 impl Bar {
     pub fn inc(&self, n: u64) {
-        if !self.quiet {
-            self.pb.inc(n);
+        if self.quiet {
+            return;
+        }
+        match &self.inner {
+            None => self.pb.inc(n),
+            Some(ic) => {
+                let done = ic.done.fetch_add(n, Ordering::Relaxed) + n;
+                // Refresh the text about 100 times per step, not per item.
+                let every = (ic.len / 100).max(1);
+                if done % every == 0 || done >= ic.len {
+                    let mut st = self.state.lock().unwrap();
+                    let within = (done.min(ic.len) as f64) / ic.len.max(1) as f64;
+                    st.stage_frac = ((ic.iter.saturating_sub(1) as f64 + within)
+                        / ic.total.max(1) as f64)
+                        .min(1.0);
+                    let msg = live_text(&st, &st.step, Some((done.min(ic.len), ic.len)));
+                    drop(st);
+                    self.pb.set_message(msg);
+                }
+            }
         }
     }
     pub fn set_position(&self, n: u64) {
-        if !self.quiet {
+        if !self.quiet && self.inner.is_none() {
             self.pb.set_position(n);
         }
     }
@@ -428,7 +502,7 @@ impl Bar {
         }
     }
     pub fn set_length(&self, len: u64) {
-        if !self.quiet {
+        if !self.quiet && self.inner.is_none() {
             self.pb.set_length(len);
         }
     }
@@ -505,6 +579,8 @@ mod tests {
     fn verbs_are_stable() {
         assert_eq!(verb("mono"), "Monophone");
         assert_eq!(verb("sat"), "SAT/fMLLR");
+        assert_eq!(verb("sat_3"), "SAT/fMLLR 3");
+        assert_eq!(verb("pronprob"), "Pron probs");
         assert_eq!(verb("custom"), "custom");
     }
 }
