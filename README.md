@@ -19,8 +19,10 @@
 ## Install
 
 ```
-cargo binstall viter
+cargo binstall --git https://github.com/thewh1teagle/viter viter
 ```
+
+Or grab a binary from the [releases page](https://github.com/thewh1teagle/viter/releases).
 
 ## Use
 
