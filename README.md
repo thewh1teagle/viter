@@ -12,7 +12,9 @@
 |  | Montreal Forced Aligner | viter |
 |---|---|---|
 | Setup | conda, Kaldi, Python | one static binary |
-| Train on LJSpeech, 23.9 h | 42 min | **under 2 min** |
+| Train on LJSpeech, 23.9 h, same recipe | 42 min | **10 min** |
+| Same, short schedule | | **2 min** |
+| Phone boundaries within 20 ms of MFA | | **95.7%** |
 | Output | Praat TextGrids | the same TextGrids |
 | Viewer | Praat | `viter serve` |
 

@@ -8,20 +8,29 @@ against the reference implementation sitting in `plans/`.
 
 Measured against the TextGrids of a real MFA 3.4 `train` run on the same corpus, dictionary
 and machine, with `plans/parity/parity_001.py` (boundary diff), `parity_002_breakdown.py`
-(silence-adjacent vs internal) and `parity_003_silences.py` (silence intervals).
+(silence-adjacent vs internal), `parity_003_silences.py` (silence intervals) and
+`parity_004_feats.py` (features vs Kaldi binaries).
 
 | | viter vs MFA | viter vs viter (other seed) |
 |---|---|---|
-| phone label sequences | identical on all 13,087 files | identical |
-| phone boundaries within 10 ms | 38% | 77% |
-| within 20 ms | 69% | 95% |
-| within 30 ms | 94% | 99% |
+| phone label sequences | identical on all 13,088 files | identical |
+| phone boundaries within 10 ms | 83% | 77% |
+| within 20 ms | 96% | 95% |
+| median difference | 0 ms | 0 ms |
+| silence intervals | 55.9k (MFA 59.9k) | |
 
-Best configuration is MFA's actual one from its `meta.json`: `--no-position-dependent`
-and `--no-lda` (SAT on delta features). The remaining gap is concentrated next to silences:
-MFA opens about 13,000 short pauses (30 to 60 ms) between words that viter does not.
-Phone-internal boundaries agree at 87% within two frames. Dictionary and global silence
-probabilities, silence boosting and beam width have all been tested and do not move it.
+MFA's TextGrids are as close to viter's as one viter run is to another: parity. The
+configuration is MFA's own for this corpus, `--no-position-dependent` with LDA and the
+default schedule (mono → tri → LDA+MLLT → SAT → SAT 2 → pronunciation probabilities → SAT 3),
+about 10 minutes on an NVIDIA DGX Spark. The short schedule (`--sat-rounds 1 --no-pron-probs`)
+trains in about 2 minutes at roughly 70% within 20 ms.
+
+What it took (all found by auditing training against the Kaldi/MFA source and by diffing
+MFA's model structure through `viter import`): MFA's real phone topology (state 0 skips to
+state 1, 2 or the exit and only state 1 loops), one pdf per silence state, MFA's Gaussian
+schedule details, SAT rounds initialised from statistics, composed fMLLR transforms,
+silence-free LDA/MLLT statistics, and MFA's exact pronunciation-probability counting.
+Aligning with an imported MFA model reproduces MFA's own TextGrids at 99.8% within 20 ms.
 Tracking issue: https://github.com/thewh1teagle/viter/issues/5.
 
 ## Method
