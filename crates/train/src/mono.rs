@@ -16,7 +16,7 @@ use viter_kaldi::types::{Feats, PhoneId};
 use crate::config::{GaussianSchedule, MonoConfig, Stage};
 use crate::pipeline::{
     FeatureKind, GraphSet, IterationPlan, IterationSummary, ModelState, NoHooks, StageCtx,
-    StageOutput, UpdateOptions, align, run_iterations, stats,
+    StageOutput, UpdateOptions, align, chunk, run_iterations, stats,
 };
 
 /// Number of leading utterances whose features seed the global Gaussian.
@@ -86,9 +86,6 @@ pub fn run(ctx: &mut StageCtx<'_>, cfg: &MonoConfig) -> Result<StageOutput> {
         am_si: None,
     });
 
-    // Stage features: cmvn'd MFCC + deltas, computed once and reused every iteration.
-    let feats = ctx.feats.feats_for_many(&utts, FeatureKind::Deltas);
-
     // Graphs are built once: the monophone tree never changes during this stage.
     let bar = ctx.progress.bar("graphs", utts.len() as u64);
     let mut graphs = {
@@ -119,13 +116,32 @@ pub fn run(ctx: &mut StageCtx<'_>, cfg: &MonoConfig) -> Result<StageOutput> {
         ));
     }
 
+    // Iteration 0's accumulation walks speaker-aligned chunks like every later
+    // iteration: one chunk's deltas are derived, used and dropped before the next.
     let started = std::time::Instant::now();
     let bar = ctx
         .progress
         .bar("mono iter 0 · accumulate", utts.len() as u64);
     let st = {
         let m = ctx.model();
-        stats::accumulate(ctx.device, &m.am, &m.tm, &outcome.alignments, &feats, &bar)
+        let mut acc: Option<stats::Stats> = None;
+        // Chunks are speaker-grouped, so their order need not match `utts`; map each
+        // corpus index back to its position in the subset.
+        let pos_of: std::collections::HashMap<usize, usize> =
+            utts.iter().enumerate().map(|(i, &u)| (u, i)).collect();
+        for c in chunk::by_frames(&ctx.feats, &utts, chunk::frames_for(ctx.cfg)) {
+            let feats = ctx.feats.feats_for_many(&c, FeatureKind::Deltas);
+            let alis: Vec<Option<viter_kaldi::types::Alignment>> = c
+                .iter()
+                .map(|u| outcome.alignments[pos_of[u]].clone())
+                .collect();
+            let part = stats::accumulate(ctx.device, &m.am, &m.tm, &alis, &feats, &bar);
+            match &mut acc {
+                Some(a) => a.merge(part),
+                None => acc = Some(part),
+            }
+        }
+        acc.unwrap_or_else(|| stats::Stats::empty(&m.am, &m.tm))
     };
     bar.finish();
 
@@ -181,13 +197,12 @@ pub fn run(ctx: &mut StageCtx<'_>, cfg: &MonoConfig) -> Result<StageOutput> {
         utts: &utts,
     };
 
-    let rebuild = |c: &StageCtx<'_>, u: &[usize]| c.feats.feats_for_many(u, FeatureKind::Deltas);
+    let derive = |c: &StageCtx<'_>, u: &[usize]| c.feats.feats_for_many(u, FeatureKind::Deltas);
     let alignments = run_iterations(
         ctx,
         &mut plan,
         &mut NoHooks,
-        feats,
-        &rebuild,
+        &derive,
         &mut graphs,
         outcome.alignments,
     )?;

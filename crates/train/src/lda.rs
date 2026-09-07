@@ -48,14 +48,11 @@ pub fn run(ctx: &mut StageCtx<'_>, cfg: &LdaConfig) -> Result<StageOutput> {
 
     // 2. Rebuild the tree on LDA features. `lda.py:380-386` calls `_setup_tree` with
     // `initial_mix_up=False`, so the model starts at one gaussian per leaf.
-    let feats = ctx
-        .feats
-        .feats_for_many(&utts, FeatureKind::SpliceLda(&lda_mat));
     let setup = tri::build_tree_stage(
         ctx,
         &utts,
         &prev_alignments,
-        &feats,
+        &|c, u| c.feats.feats_for_many(u, FeatureKind::SpliceLda(&lda_mat)),
         &TreeSetup {
             num_leaves: cfg.num_leaves,
             thresh: cfg.tree_thresh,
@@ -136,8 +133,15 @@ pub fn run(ctx: &mut StageCtx<'_>, cfg: &LdaConfig) -> Result<StageOutput> {
         utts: &utts,
     };
 
-    let mut hooks = MlltHooks { cfg: cfg.clone() };
-    let rebuild = |c: &StageCtx<'_>, u: &[usize]| {
+    let mut hooks = MlltHooks {
+        cfg: cfg.clone(),
+        num_utts: utts.len(),
+        accs: None,
+    };
+    // Each chunk derives its features from whatever LDA+MLLT transform the model
+    // currently holds, so an MLLT update takes effect from the next chunk on with no
+    // separate rebuild step.
+    let derive = |c: &StageCtx<'_>, u: &[usize]| {
         let lda = c
             .model()
             .lda
@@ -145,22 +149,8 @@ pub fn run(ctx: &mut StageCtx<'_>, cfg: &LdaConfig) -> Result<StageOutput> {
             .expect("lda stage always has a transform");
         c.feats.feats_for_many(u, FeatureKind::SpliceLda(&lda))
     };
-    // Features are recomputed from the current transform each iteration only when the
-    // hook signals an MLLT update, so the initial view is the one built above.
-    let feats = ctx.feats.feats_for_many(
-        &utts,
-        FeatureKind::SpliceLda(ctx.model().lda.as_ref().unwrap()),
-    );
 
-    let alignments = run_iterations(
-        ctx,
-        &mut plan,
-        &mut hooks,
-        feats,
-        &rebuild,
-        &mut graphs,
-        converted,
-    )?;
+    let alignments = run_iterations(ctx, &mut plan, &mut hooks, &derive, &mut graphs, converted)?;
 
     ctx.progress.stage_done("lda", "");
     Ok(StageOutput { utts, alignments })
@@ -183,6 +173,10 @@ fn estimate_lda(
     // kalpy `LdaStatsAccumulator` (feat/lda.py:44-60) passes the silence phones with
     // `silence_weight = 0.0`: silence frames contribute nothing to the scatter.
     let silence_pdfs: std::collections::HashSet<u32> = ctx.silence_pdfs().into_iter().collect();
+    // Not chunked: `spliced()` derives one utterance's 91-dim view at a time inside
+    // the rayon fold and drops it there, so this pass never materializes a
+    // whole-subset derived view and has nothing to bound. It also runs once per
+    // stage, not per iteration.
     let bar = ctx.progress.bar("lda stats", utts.len() as u64);
     let acc = (0..utts.len())
         .into_par_iter()
@@ -231,37 +225,68 @@ fn estimate_lda(
 }
 
 /// MLLT re-estimation at the configured iterations.
+///
+/// The accumulator lives across the iteration's chunks: `begin_iteration` opens it,
+/// each chunk adds its statistics, and `end_iteration` performs the update
+/// (`lda.py:434-461`). The per-utterance RNG stream is seeded from the utterance's
+/// position in the stage subset, which `base` tracks across chunks, so the random
+/// pruning is identical to an unchunked pass.
 struct MlltHooks {
     cfg: LdaConfig,
+    /// Number of utterances in the stage subset, for the progress bar.
+    num_utts: usize,
+    accs: Option<MlltState>,
+}
+
+struct MlltState {
+    accs: MlltAccs,
+    /// Position of the next chunk's first utterance in the stage subset.
+    base: usize,
+    bar: crate::pipeline::progress::Bar,
 }
 
 impl IterationHooks for MlltHooks {
-    fn before_accumulate(
-        &mut self,
-        ctx: &mut StageCtx<'_>,
-        iteration: usize,
-        utts: &[usize],
-        alignments: &[Option<Alignment>],
-        feats: &[Feats],
-    ) -> Result<bool> {
+    fn begin_iteration(&mut self, ctx: &mut StageCtx<'_>, iteration: usize) -> Result<bool> {
         if !self.cfg.mllt_iterations.contains(&iteration) {
+            self.accs = None;
             return Ok(false);
         }
-
         let dim = ctx.model().am.dim();
         let bar = ctx.progress.iter_bar(
             "lda",
             iteration,
             self.cfg.num_iterations,
             "mllt",
-            utts.len() as u64,
+            self.num_utts as u64,
         );
+        self.accs = Some(MlltState {
+            accs: MlltAccs::new(dim, self.cfg.random_prune),
+            base: 0,
+            bar,
+        });
+        Ok(true)
+    }
 
+    fn accumulate_chunk(
+        &mut self,
+        ctx: &StageCtx<'_>,
+        iteration: usize,
+        utts: &[usize],
+        alignments: &[Option<Alignment>],
+        feats: &[Feats],
+    ) -> Result<()> {
+        let Some(state) = self.accs.as_mut() else {
+            return Ok(());
+        };
+        let dim = ctx.model().am.dim();
         let random_prune = self.cfg.random_prune;
         let seed = ctx.cfg.seed;
+        let base = state.base;
+        state.base += utts.len();
         let mllt_silence: std::collections::HashSet<u32> = ctx.silence_pdfs().into_iter().collect();
         let mllt_silence = &mllt_silence;
-        let accs = {
+        let bar = &state.bar;
+        let part = {
             let m = ctx.model();
             (0..utts.len())
                 .into_par_iter()
@@ -272,7 +297,7 @@ impl IterationHooks for MlltHooks {
                             // Deterministic per-utterance stream: MLLT prunes randomly.
                             let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(
                                 seed ^ ((iteration as u64) << 32)
-                                    ^ (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15),
+                                    ^ ((base + i) as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15),
                             );
                             let f = &feats[i];
                             let frames = ali.tids.len().min(f.nrows());
@@ -304,12 +329,21 @@ impl IterationHooks for MlltHooks {
                     },
                 )
         };
-        bar.finish();
+        state.accs.add(&part);
+        Ok(())
+    }
+
+    fn end_iteration(&mut self, ctx: &mut StageCtx<'_>, iteration: usize) -> Result<()> {
+        let Some(state) = self.accs.take() else {
+            return Ok(());
+        };
+        state.bar.finish();
+        let dim = ctx.model().am.dim();
 
         // Update: new [dim, dim] matrix, applied to the model means and composed onto
         // the running LDA transform (`lda.py:434-461`).
         let mut mat: Mat = identity(dim);
-        let (objf, count) = accs.update(&mut mat);
+        let (objf, count) = state.accs.update(&mut mat);
         tracing::info!(
             iteration,
             objf_per_frame = if count > 0.0 { objf / count } else { 0.0 },
@@ -320,9 +354,9 @@ impl IterationHooks for MlltHooks {
         transform::transform_means(&mut m.am, &mat);
         let prev = m.lda.take().expect("lda stage always has a transform");
         m.lda = Some(transform::compose_transforms(&mat, &prev, false));
-
-        // Feature space changed: the caller must rebuild its cached view.
-        Ok(true)
+        // The feature space changed; the next pass over the chunks derives from the
+        // new transform, so there is nothing further to rebuild.
+        Ok(())
     }
 }
 

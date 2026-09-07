@@ -34,6 +34,31 @@ impl Stats {
     pub fn total_frames(&self) -> f64 {
         self.gmm.total_frames
     }
+
+    /// Zero statistics shaped for a model, the identity of [`merge`](Self::merge).
+    /// A stage with no utterances at all produces this.
+    pub fn empty(am: &AmDiagGmm, tm: &TransitionModel) -> Self {
+        Self {
+            gmm: AccumAmDiagGmm::new(am, GmmFlags::ALL),
+            transitions: TransitionAccs(vec![0.0; tm.num_transition_ids() + 1]),
+        }
+    }
+
+    /// `self += other`, the same sum [`accumulate_with`] performs when rayon joins two
+    /// partial accumulators. Chunked passes accumulate one chunk at a time and merge,
+    /// which is the same set of f64 adds in a split order rayon could itself produce.
+    pub fn merge(&mut self, other: Stats) {
+        // `AccumAmDiagGmm::add` sums the per-pdf accumulators and both running totals.
+        self.gmm.add(&other.gmm, 1.0);
+        for (x, y) in self
+            .transitions
+            .0
+            .iter_mut()
+            .zip(other.transitions.0.iter())
+        {
+            *x += *y;
+        }
+    }
 }
 
 /// Accumulate over every aligned utterance.
@@ -291,6 +316,52 @@ mod tests {
         let o = UpdateOptions::default();
         assert_eq!(o.min_gaussian_occupancy, 10.0);
         assert!(o.remove_low_count_gaussians);
+    }
+
+    /// Stand-in for one "chunk" of accumulation: the same per-frame adds
+    /// `accumulate_one` performs, without needing a trained model.
+    fn accumulate_range(range: std::ops::Range<usize>) -> Stats {
+        let mut s = Stats {
+            gmm: AccumAmDiagGmm {
+                accs: vec![viter_kaldi::gmm::AccumDiagGmm::new(2, 3, GmmFlags::ALL)],
+                total_frames: 0.0,
+                total_loglike: 0.0,
+            },
+            transitions: TransitionAccs(vec![0.0; 4]),
+        };
+        for t in range {
+            let x = [t as f32 * 0.5, 1.0 - t as f32, 0.25];
+            let post = [0.75f32, 0.25];
+            s.gmm.accumulate_from_posteriors(0, &x, &post);
+            s.gmm.total_loglike += -(t as f64) * 0.125;
+            s.transitions.0[t % 4] += 1.0;
+        }
+        s.gmm.total_frames += 0.0; // frames come from the posteriors above
+        s
+    }
+
+    #[test]
+    fn merging_halves_equals_accumulating_the_whole() {
+        let whole = accumulate_range(0..64);
+        let mut merged = accumulate_range(0..32);
+        merged.merge(accumulate_range(32..64));
+
+        let rel = |a: f64, b: f64| (a - b).abs() / a.abs().max(1.0);
+        assert!(rel(whole.gmm.total_frames, merged.gmm.total_frames) < 1e-9);
+        assert!(rel(whole.gmm.total_loglike, merged.gmm.total_loglike) < 1e-9);
+        for (a, b) in whole.transitions.0.iter().zip(merged.transitions.0.iter()) {
+            assert_eq!(a, b);
+        }
+        let (wa, ma) = (&whole.gmm.accs[0], &merged.gmm.accs[0]);
+        for (a, b) in wa.occupancy.iter().zip(ma.occupancy.iter()) {
+            assert!(rel(*a, *b) < 1e-9);
+        }
+        for (a, b) in wa.mean_accum.iter().zip(ma.mean_accum.iter()) {
+            assert!(rel(*a, *b) < 1e-9);
+        }
+        for (a, b) in wa.var_accum.iter().zip(ma.var_accum.iter()) {
+            assert!(rel(*a, *b) < 1e-9);
+        }
     }
 
     #[test]

@@ -29,7 +29,7 @@
 | `device` | `Device::auto/cpu/gpu`, `score`, `score_batch`, `score_components`, `gemm_abt`. CPU via faer, GPU via wgpu WGSL. |
 | `model` | `AcousticModel` — the `.viter` file: save/load, postcard + `"VITR"` magic + version. |
 
-`viter_train` splits as `config.rs`, `pipeline.rs` (feature store + shared stage helpers), and `mono.rs` / `tri.rs` / `lda.rs` / `sat.rs`, each exposing one `run(ctx, cfg)`.
+`viter_train` splits as `config.rs`, `pipeline/` (`features.rs` the feature store, `chunk.rs` the speaker-grouped chunker, `iterate.rs` the per-stage EM loop, `full_pass.rs` the full-corpus alignment passes, `align.rs`, `stats.rs`, `refine.rs`, `progress.rs`), and `mono.rs` / `tri.rs` / `lda.rs` / `sat.rs`, each exposing one `run(ctx, cfg)`.
 
 ## Data flow: wav → TextGrid
 
@@ -162,6 +162,9 @@ All stages start from the same base: 16 kHz mono → 13-dim MFCC → per-speaker
 
 `FeatureStore` holds the base MFCC+CMVN for the whole corpus in RAM as f32 plus per-speaker
 CMVN stats and (once estimated) per-speaker fMLLR transforms, and derives the stage-specific
-features lazily via `FeatureKind::{Deltas, SpliceLda, SpliceLdaFmllr}`. The `.viter` model
+features lazily via `FeatureKind::{Deltas, SpliceLda, SpliceLdaFmllr}`. Derived features are
+never held for the whole corpus: every pass walks `chunk::by_frames` groups of about
+1.2M frames and drops each group's view before the next, so peak memory is the base store
+plus one chunk (see [CLI.md](CLI.md#large-corpora)). The `.viter` model
 records which pipeline it was trained with (`deltas`, `splice`, `lda`, `fmllr`) so
 `align_corpus` reconstructs it exactly.

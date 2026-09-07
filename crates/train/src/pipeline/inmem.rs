@@ -12,7 +12,7 @@ use viter_kaldi::device::Device;
 use viter_kaldi::model::AcousticModel;
 use viter_kaldi::types::IntervalAlignment;
 
-use super::{AlignOverrides, align_corpus_reading};
+use super::full_pass::{AlignOverrides, align_corpus_reading};
 
 /// As [`super::align_corpus_with`], but `audio[i]` is the waveform of
 /// `corpus.utts[i]` (any sample rate; converted with [`to_16k`]).

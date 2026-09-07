@@ -519,6 +519,17 @@ pub struct TrainConfig {
     pub subset: bool,
     /// Utterances scored per `Device::score_batch` call.
     pub batch_utts: usize,
+    /// Frames of derived features held at once during a full-corpus pass. Passes over
+    /// the whole corpus (the final alignment, `viter align`, SAT's two-feature stats)
+    /// walk it in speaker-grouped chunks of about this many frames, so peak memory is
+    /// the base MFCC store plus one chunk instead of every derived view at once.
+    /// 1.2M frames is ~3.3 h of audio, ~0.7 GB spliced.
+    #[serde(default = "default_chunk_frames")]
+    pub chunk_frames: usize,
+}
+
+fn default_chunk_frames() -> usize {
+    1_200_000
 }
 
 impl Default for TrainConfig {
@@ -541,6 +552,7 @@ impl Default for TrainConfig {
             schedule: default_schedule(),
             subset: true,
             batch_utts: 64,
+            chunk_frames: default_chunk_frames(),
         }
     }
 }

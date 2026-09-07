@@ -19,7 +19,7 @@ use viter_kaldi::types::{Alignment, Feats};
 use crate::config::{GaussianSchedule, SatConfig, Stage};
 use crate::pipeline::{
     FeatureKind, GraphSet, IterationHooks, IterationPlan, StageCtx, StageOutput, UpdateOptions,
-    run_iterations, stats,
+    chunk, run_iterations, stats,
 };
 use crate::tri::{self, TreeSetup};
 
@@ -48,10 +48,6 @@ pub fn run(ctx: &mut StageCtx<'_>, cfg: &SatConfig, key: &str) -> Result<StageOu
     let prev_alignments: Vec<Option<Alignment>> =
         crate::pipeline::align_subset_with_previous(ctx, &utts)?;
 
-    // SAT runs on the LDA feature space when the LDA stage ran, otherwise on deltas.
-    let kind = current_kind(ctx);
-    let feats = ctx.feats.feats_for_many(&utts, kind);
-
     // Rebuild the tree. `sat.py` inherits `_setup_tree`; when a previous model exists
     // it initializes from it (`gmm_init_model_from_previous`) with
     // mix_up = mix_down = initial_gaussians (`triphone.py:441-461`).
@@ -59,7 +55,11 @@ pub fn run(ctx: &mut StageCtx<'_>, cfg: &SatConfig, key: &str) -> Result<StageOu
         ctx,
         &utts,
         &prev_alignments,
-        &feats,
+        // SAT runs on the LDA feature space when the LDA stage ran, else on deltas.
+        &|c, u| {
+            let kind = current_kind(c);
+            c.feats.feats_for_many(u, kind)
+        },
         &TreeSetup {
             num_leaves: cfg.num_leaves,
             thresh: cfg.tree_thresh,
@@ -112,22 +112,16 @@ pub fn run(ctx: &mut StageCtx<'_>, cfg: &SatConfig, key: &str) -> Result<StageOu
     };
     bar.finish();
 
-    let mut hooks = FmllrHooks { cfg: cfg.clone() };
-    let rebuild = |c: &StageCtx<'_>, u: &[usize]| {
+    let mut hooks = FmllrHooks {
+        cfg: cfg.clone(),
+        estimator: None,
+    };
+    let derive = |c: &StageCtx<'_>, u: &[usize]| {
         let kind = current_kind(c);
         c.feats.feats_for_many(u, kind)
     };
-    let feats = ctx.feats.feats_for_many(&utts, current_kind(ctx));
 
-    let alignments = run_iterations(
-        ctx,
-        &mut plan,
-        &mut hooks,
-        feats,
-        &rebuild,
-        &mut graphs,
-        converted,
-    )?;
+    let alignments = run_iterations(ctx, &mut plan, &mut hooks, &derive, &mut graphs, converted)?;
 
     // Speaker-independent alignment model from two-feature statistics.
     build_align_model(ctx, cfg, &utts, &alignments, &mut plan)?;
@@ -196,7 +190,7 @@ fn install(
     Ok(converted)
 }
 
-/// Estimate one fMLLR transform per speaker.
+/// Estimate one fMLLR transform per speaker, in two phases.
 ///
 /// Silence posteriors are scaled by `silence_weight` (MFA `features.py:635` = 0.0, so
 /// silence frames contribute nothing) before accumulating
@@ -204,9 +198,222 @@ fn install(
 /// below `fmllr.min_count` keeps no transform, matching Kaldi's behaviour of leaving
 /// such speakers unadapted.
 ///
-/// The transition and acoustic models are passed explicitly rather than read from
-/// `ctx.model()`, so this is callable from `align_corpus`, where the context carries
-/// no in-training model.
+/// [`accumulate`](Self::accumulate) takes one chunk of utterances at a time and folds
+/// its statistics into the running per-speaker accumulators, so a speaker may be
+/// spread over any number of chunks; [`solve`](Self::solve) then updates and composes
+/// one transform per speaker. Splitting the pass this way is what lets a chunk close
+/// mid-speaker: a single-speaker corpus would otherwise always be one chunk.
+///
+/// The transition and acoustic models are passed to `accumulate` explicitly rather
+/// than read from `ctx.model()`, so this is usable from `align_corpus`, where the
+/// context carries no in-training model.
+pub struct FmllrEstimator {
+    /// Running statistics per speaker; `None` until the speaker is first seen.
+    accs: Vec<Option<FmllrDiagGmmAccs>>,
+    dim: usize,
+}
+
+impl FmllrEstimator {
+    pub fn new(ctx: &StageCtx<'_>, am: &AmDiagGmm) -> Self {
+        let num_speakers = ctx.feats.num_speakers();
+        Self {
+            accs: (0..num_speakers).map(|_| None).collect(),
+            dim: am.dim(),
+        }
+    }
+
+    /// Fold one chunk's statistics into the running per-speaker accumulators.
+    /// `alignments` and `feats` are indexed alongside `utts`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn accumulate(
+        &mut self,
+        ctx: &StageCtx<'_>,
+        tm: &TransitionModel,
+        am: &AmDiagGmm,
+        utts: &[usize],
+        alignments: &[Option<Alignment>],
+        feats: &[Feats],
+        cfg: &SatConfig,
+    ) -> Result<()> {
+        let dim = self.dim;
+        let silence_pdfs: std::collections::HashSet<u32> =
+            tm.silence_pdfs(&ctx.silence_phones).into_iter().collect();
+        let silence_weight = cfg.silence_weight;
+
+        // Group this chunk's entries by speaker; only the speakers it contains are
+        // touched. Speakers keep their global index so the order of the per-speaker
+        // additions is the order the chunks arrive in.
+        let mut by_speaker: Vec<(usize, Vec<usize>)> = Vec::new();
+        let mut slot: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+        for (i, &u) in utts.iter().enumerate() {
+            let spk = ctx.feats.speaker_of(u);
+            match slot.get(&spk) {
+                Some(&k) => by_speaker[k].1.push(i),
+                None => {
+                    slot.insert(spk, by_speaker.len());
+                    by_speaker.push((spk, vec![i]));
+                }
+            }
+        }
+        by_speaker.sort_by_key(|(spk, _)| *spk);
+
+        // Per-frame aligned pdf and weight for every utterance, shared by both paths.
+        // Silence frames are scaled by `silence_weight` (MFA uses 0.0, so they drop out).
+        let per_utt: Vec<Option<(Vec<u32>, Vec<f32>)>> = (0..utts.len())
+            .into_par_iter()
+            .map(|i| {
+                let ali = alignments[i].as_ref()?;
+                let frames = ali.tids.len().min(feats[i].nrows());
+                let mut pdfs = Vec::with_capacity(frames);
+                let mut ws = Vec::with_capacity(frames);
+                for t in 0..frames {
+                    let pdf = tm.transition_id_to_pdf(ali.tids[t]);
+                    pdfs.push(pdf);
+                    ws.push(if silence_pdfs.contains(&pdf) {
+                        silence_weight
+                    } else {
+                        1.0
+                    });
+                }
+                Some((pdfs, ws))
+            })
+            .collect();
+
+        // On the GPU the whole speaker is one batched accumulation (two compute
+        // kernels over the concatenated frames); the device serializes speakers
+        // itself, so that loop stays sequential. On the CPU, keep the
+        // rayon-over-chunks path.
+        let parts: Vec<(usize, FmllrDiagGmmAccs)> = if ctx.device.kind() == DeviceKind::Gpu {
+            let t0 = std::time::Instant::now();
+            let parts: Vec<(usize, FmllrDiagGmmAccs)> = by_speaker
+                .iter()
+                .map(|(spk, entries)| {
+                    let live: Vec<usize> = entries
+                        .iter()
+                        .copied()
+                        .filter(|&i| per_utt[i].is_some())
+                        .collect();
+                    let f: Vec<&Feats> = live.iter().map(|&i| &feats[i]).collect();
+                    let p: Vec<&[u32]> = live
+                        .iter()
+                        .map(|&i| per_utt[i].as_ref().expect("filtered").0.as_slice())
+                        .collect();
+                    let w: Vec<&[f32]> = live
+                        .iter()
+                        .map(|&i| per_utt[i].as_ref().expect("filtered").1.as_slice())
+                        .collect();
+                    let mut accs = FmllrDiagGmmAccs::new(dim);
+                    ctx.device.fmllr_accumulate_batch(&f, &p, &w, am, &mut accs);
+                    (*spk, accs)
+                })
+                .collect();
+            tracing::debug!(accumulate_ms = t0.elapsed().as_millis(), "fmllr accumulate");
+            parts
+        } else {
+            by_speaker
+                .par_iter()
+                .map(|(spk, entries)| {
+                    // A speaker with thousands of utterances (single-speaker TTS
+                    // corpora) must not serialize on one core: accumulate per
+                    // utterance chunk in parallel and reduce, the sums are exact up
+                    // to f64 rounding order.
+                    let accumulate = |chunk: &[usize]| -> FmllrDiagGmmAccs {
+                        let mut accs = FmllrDiagGmmAccs::new(dim);
+                        let mut posteriors: Vec<f32> = Vec::new();
+                        for &i in chunk {
+                            let Some((pdfs, ws)) = &per_utt[i] else {
+                                continue;
+                            };
+                            let f = &feats[i];
+                            for t in 0..pdfs.len() {
+                                if ws[t] == 0.0 {
+                                    continue;
+                                }
+                                let row = f.row(t);
+                                let x = row.as_slice().expect("feature rows are contiguous");
+                                let gmm = am.pdf(pdfs[t]);
+                                gmm.component_posteriors(x, &mut posteriors);
+                                if ws[t] != 1.0 {
+                                    for pp in posteriors.iter_mut() {
+                                        *pp *= ws[t];
+                                    }
+                                }
+                                accs.accumulate_from_posteriors(gmm, x, &posteriors);
+                            }
+                        }
+                        accs
+                    };
+                    let chunk = (entries.len() / (rayon::current_num_threads() * 4)).max(8);
+                    let accs = entries.par_chunks(chunk).map(accumulate).reduce(
+                        || FmllrDiagGmmAccs::new(dim),
+                        |mut a, b| {
+                            a.add(&b);
+                            a
+                        },
+                    );
+                    (*spk, accs)
+                })
+                .collect()
+        };
+
+        for (spk, part) in parts {
+            match &mut self.accs[spk] {
+                Some(acc) => acc.add(&part),
+                None => self.accs[spk] = Some(part),
+            }
+        }
+        Ok(())
+    }
+
+    /// Update and compose one transform per speaker. The returned vector is
+    /// `num_speakers` long with `Some` only for speakers that were accumulated and
+    /// hold enough counts.
+    pub fn solve(self, ctx: &StageCtx<'_>, cfg: &SatConfig) -> Result<Vec<Option<Mat>>> {
+        let num_speakers = self.accs.len();
+        let bar = ctx.progress.bar("fmllr", num_speakers as u64);
+        // A solve is ~40 ms of dense linear algebra (40 row updates, each inverting
+        // the transform), which on 462 TIMIT speakers dwarfed the accumulation, so
+        // the solves run in parallel over speakers.
+        let t0 = std::time::Instant::now();
+        let transforms: Vec<Option<Mat>> = self
+            .accs
+            .into_par_iter()
+            .enumerate()
+            .map(|(spk, accs)| {
+                bar.inc(1);
+                let accs = accs?;
+                if accs.count() < cfg.fmllr.min_count {
+                    // Too little data to adapt this speaker reliably.
+                    return None;
+                }
+                // kalpy (`transform.cpp:596-607`) starts from the identity on the
+                // already adapted features and then composes the new transform with
+                // the speaker's previous one (`feat/fmllr.py:226-229`), so adaptation
+                // accumulates.
+                let (mat, _objf, _count) = accs.update(&cfg.fmllr, None);
+                Some(match ctx.feats.fmllr_for(spk) {
+                    Some(prev) => viter_kaldi::transform::compose_transforms(&mat, prev, true),
+                    None => mat,
+                })
+            })
+            .collect();
+        bar.finish();
+        tracing::debug!(solve_ms = t0.elapsed().as_millis(), "fmllr solve");
+
+        let adapted = transforms.iter().filter(|t| t.is_some()).count();
+        tracing::info!(
+            speakers = num_speakers,
+            adapted,
+            "estimated fMLLR transforms"
+        );
+        Ok(transforms)
+    }
+}
+
+/// Estimate one fMLLR transform per speaker from a single set of utterances.
+///
+/// Thin wrapper over [`FmllrEstimator`] for callers that have every utterance of
+/// every speaker they care about in hand at once.
 pub fn estimate_fmllr(
     ctx: &StageCtx<'_>,
     tm: &TransitionModel,
@@ -216,187 +423,65 @@ pub fn estimate_fmllr(
     feats: &[Feats],
     cfg: &SatConfig,
 ) -> Result<Vec<Option<Mat>>> {
-    let dim = am.dim();
-    let num_speakers = ctx.feats.num_speakers();
-    let silence_pdfs: std::collections::HashSet<u32> =
-        tm.silence_pdfs(&ctx.silence_phones).into_iter().collect();
-
-    // Group this list's entries by speaker.
-    let mut by_speaker: Vec<Vec<usize>> = vec![Vec::new(); num_speakers];
-    for (i, &u) in utts.iter().enumerate() {
-        by_speaker[ctx.feats.speaker_of(u)].push(i);
-    }
-
-    let bar = ctx.progress.bar("fmllr", num_speakers as u64);
-    let silence_weight = cfg.silence_weight;
-
-    // Per-frame aligned pdf and weight for every utterance, shared by both paths.
-    // Silence frames are scaled by `silence_weight` (MFA uses 0.0, so they drop out).
-    let per_utt: Vec<Option<(Vec<u32>, Vec<f32>)>> = (0..utts.len())
-        .into_par_iter()
-        .map(|i| {
-            let ali = alignments[i].as_ref()?;
-            let frames = ali.tids.len().min(feats[i].nrows());
-            let mut pdfs = Vec::with_capacity(frames);
-            let mut ws = Vec::with_capacity(frames);
-            for t in 0..frames {
-                let pdf = tm.transition_id_to_pdf(ali.tids[t]);
-                pdfs.push(pdf);
-                ws.push(if silence_pdfs.contains(&pdf) {
-                    silence_weight
-                } else {
-                    1.0
-                });
-            }
-            Some((pdfs, ws))
-        })
-        .collect();
-
-    // On the GPU the whole speaker is one batched accumulation (two compute kernels
-    // over the concatenated frames); the device serializes speakers itself, so that
-    // loop stays sequential and only the solves run in parallel. On the CPU, keep
-    // the rayon-over-chunks path.
-    let estimate = |spk: usize, accs: FmllrDiagGmmAccs| -> Option<Mat> {
-        bar.inc(1);
-        if accs.count() < cfg.fmllr.min_count {
-            // Too little data to adapt this speaker reliably.
-            return None;
-        }
-        // kalpy (`transform.cpp:596-607`) starts from the identity on the already
-        // adapted features and then composes the new transform with the speaker's
-        // previous one (`feat/fmllr.py:226-229`), so adaptation accumulates.
-        let (mat, _objf, _count) = accs.update(&cfg.fmllr, None);
-        Some(match ctx.feats.fmllr_for(spk) {
-            Some(prev) => viter_kaldi::transform::compose_transforms(&mat, prev, true),
-            None => mat,
-        })
-    };
-
-    let transforms: Vec<Option<Mat>> = if ctx.device.kind() == DeviceKind::Gpu {
-        // Accumulate every speaker first, then solve the per-speaker transforms in
-        // parallel: a solve is ~40 ms of dense linear algebra (40 row updates, each
-        // inverting the transform), which on 462 TIMIT speakers dwarfed the kernels.
-        let t0 = std::time::Instant::now();
-        let accs: Vec<FmllrDiagGmmAccs> = by_speaker
-            .iter()
-            .map(|entries| {
-                let live: Vec<usize> = entries
-                    .iter()
-                    .copied()
-                    .filter(|&i| per_utt[i].is_some())
-                    .collect();
-                let f: Vec<&Feats> = live.iter().map(|&i| &feats[i]).collect();
-                let p: Vec<&[u32]> = live
-                    .iter()
-                    .map(|&i| per_utt[i].as_ref().expect("filtered").0.as_slice())
-                    .collect();
-                let w: Vec<&[f32]> = live
-                    .iter()
-                    .map(|&i| per_utt[i].as_ref().expect("filtered").1.as_slice())
-                    .collect();
-                let mut accs = FmllrDiagGmmAccs::new(dim);
-                ctx.device.fmllr_accumulate_batch(&f, &p, &w, am, &mut accs);
-                accs
-            })
-            .collect();
-        let t_acc = t0.elapsed();
-        let t0 = std::time::Instant::now();
-        let out: Vec<Option<Mat>> = accs
-            .into_par_iter()
-            .enumerate()
-            .map(|(spk, accs)| estimate(spk, accs))
-            .collect();
-        tracing::debug!(
-            accumulate_ms = t_acc.as_millis(),
-            solve_ms = t0.elapsed().as_millis(),
-            "fmllr phases"
-        );
-        out
-    } else {
-        by_speaker
-            .par_iter()
-            .enumerate()
-            .map(|(spk, entries)| {
-                // A speaker with thousands of utterances (single-speaker TTS corpora)
-                // must not serialize on one core: accumulate per utterance chunk in
-                // parallel and reduce, the sums are exact up to f64 rounding order.
-                let accumulate = |chunk: &[usize]| -> FmllrDiagGmmAccs {
-                    let mut accs = FmllrDiagGmmAccs::new(dim);
-                    let mut posteriors: Vec<f32> = Vec::new();
-                    for &i in chunk {
-                        let Some((pdfs, ws)) = &per_utt[i] else {
-                            continue;
-                        };
-                        let f = &feats[i];
-                        for t in 0..pdfs.len() {
-                            if ws[t] == 0.0 {
-                                continue;
-                            }
-                            let row = f.row(t);
-                            let x = row.as_slice().expect("feature rows are contiguous");
-                            let gmm = am.pdf(pdfs[t]);
-                            gmm.component_posteriors(x, &mut posteriors);
-                            if ws[t] != 1.0 {
-                                for pp in posteriors.iter_mut() {
-                                    *pp *= ws[t];
-                                }
-                            }
-                            accs.accumulate_from_posteriors(gmm, x, &posteriors);
-                        }
-                    }
-                    accs
-                };
-                let chunk = (entries.len() / (rayon::current_num_threads() * 4)).max(8);
-                let accs = entries.par_chunks(chunk).map(accumulate).reduce(
-                    || FmllrDiagGmmAccs::new(dim),
-                    |mut a, b| {
-                        a.add(&b);
-                        a
-                    },
-                );
-                estimate(spk, accs)
-            })
-            .collect()
-    };
-    bar.finish();
-
-    let adapted = transforms.iter().filter(|t| t.is_some()).count();
-    tracing::info!(
-        speakers = num_speakers,
-        adapted,
-        "estimated fMLLR transforms"
-    );
-    Ok(transforms)
+    let mut est = FmllrEstimator::new(ctx, am);
+    est.accumulate(ctx, tm, am, utts, alignments, feats, cfg)?;
+    est.solve(ctx, cfg)
 }
 
 /// fMLLR estimation as an iteration hook.
+///
+/// The estimator is created at the start of the iteration, each chunk folds its
+/// per-speaker statistics into it, and the solve runs once after the last chunk —
+/// so a speaker split across chunks is still estimated from all of its utterances.
+/// The transforms are installed at the end of the iteration, and the accumulation
+/// pass that follows derives its features from the adapted store — the same order
+/// the unchunked loop had (hook, rebuild, accumulate).
 struct FmllrHooks {
     cfg: SatConfig,
+    /// The iteration's estimator, `None` when the iteration does not estimate fMLLR.
+    estimator: Option<FmllrEstimator>,
 }
 
 impl IterationHooks for FmllrHooks {
-    fn before_accumulate(
+    fn begin_iteration(&mut self, ctx: &mut StageCtx<'_>, iteration: usize) -> Result<bool> {
+        if !self.cfg.fmllr_iterations().contains(&iteration) {
+            self.estimator = None;
+            return Ok(false);
+        }
+        let est = {
+            let m = ctx.model();
+            FmllrEstimator::new(ctx, &m.am)
+        };
+        self.estimator = Some(est);
+        Ok(true)
+    }
+
+    fn accumulate_chunk(
         &mut self,
-        ctx: &mut StageCtx<'_>,
-        iteration: usize,
+        ctx: &StageCtx<'_>,
+        _iteration: usize,
         utts: &[usize],
         alignments: &[Option<Alignment>],
         feats: &[Feats],
-    ) -> Result<bool> {
-        if !self.cfg.fmllr_iterations().contains(&iteration) {
-            return Ok(false);
-        }
-        let transforms = {
-            let m = ctx.model();
-            estimate_fmllr(ctx, &m.tm, &m.am, utts, alignments, feats, &self.cfg)?
+    ) -> Result<()> {
+        let Some(est) = self.estimator.as_mut() else {
+            return Ok(());
         };
+        let m = ctx.model();
+        est.accumulate(ctx, &m.tm, &m.am, utts, alignments, feats, &self.cfg)
+    }
+
+    fn end_iteration(&mut self, ctx: &mut StageCtx<'_>, _iteration: usize) -> Result<()> {
+        let Some(est) = self.estimator.take() else {
+            return Ok(());
+        };
+        let transforms = est.solve(ctx, &self.cfg)?;
         for (spk, t) in transforms.into_iter().enumerate() {
             if let Some(mat) = t {
                 ctx.feats.set_fmllr(spk, mat);
             }
         }
-        // Adapted feature space: the cached view must be rebuilt.
-        Ok(true)
+        Ok(())
     }
 }
 
@@ -420,18 +505,39 @@ fn build_align_model(
     ctx.progress
         .stage("sat", "building speaker-independent alignment model");
 
-    let adapted = ctx.feats.feats_for_many(utts, current_kind(ctx));
-    let unadapted = match ctx.model().lda.as_ref() {
-        Some(lda) => ctx.feats.feats_for_many(utts, FeatureKind::SpliceLda(lda)),
-        None => ctx.feats.feats_for_many(utts, FeatureKind::Deltas),
-    };
+    // One chunk of utterances at a time: only that chunk's derived features (LDA /
+    // fMLLR views, far larger than the base MFCCs) are live at once. These statistics
+    // are per utterance, so a chunk closing mid-speaker changes nothing and the
+    // merged result is the same accumulation as a single whole-corpus pass.
+    let pos_of: std::collections::HashMap<usize, usize> =
+        utts.iter().enumerate().map(|(p, &u)| (u, p)).collect();
+    let chunks = chunk::by_frames(&ctx.feats, utts, chunk::frames_for(ctx.cfg));
 
     let bar = ctx.progress.bar("two-feats stats", utts.len() as u64);
-    let st = {
-        let m = ctx.model();
-        stats::accumulate_with(&m.am, &m.tm, alignments, &adapted, &unadapted, &bar)
-    };
+    let mut st: Option<stats::Stats> = None;
+    for c in &chunks {
+        let adapted = ctx.feats.feats_for_many(c, current_kind(ctx));
+        let unadapted = match ctx.model().lda.as_ref() {
+            Some(lda) => ctx.feats.feats_for_many(c, FeatureKind::SpliceLda(lda)),
+            None => ctx.feats.feats_for_many(c, FeatureKind::Deltas),
+        };
+        let chunk_alis: Vec<Option<Alignment>> =
+            c.iter().map(|u| alignments[pos_of[u]].clone()).collect();
+
+        let part = {
+            let m = ctx.model();
+            stats::accumulate_with(&m.am, &m.tm, &chunk_alis, &adapted, &unadapted, &bar)
+        };
+        match &mut st {
+            Some(acc) => acc.merge(part),
+            None => st = Some(part),
+        }
+    }
     bar.finish();
+    let st = match st {
+        Some(s) => s,
+        None => return Ok(()),
+    };
 
     // Update a copy of the model: the SAT model itself must not change.
     let mut si_am = ctx.model().am.clone();
