@@ -17,7 +17,9 @@
 //! into `gconst`). Per-pdf log-likelihood is then a log-sum-exp over that pdf's
 //! contiguous range of Gaussian rows.
 
+pub mod accum;
 mod cpu;
+pub mod fmllr;
 mod gpu;
 
 use std::sync::Arc;

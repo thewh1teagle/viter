@@ -10,6 +10,7 @@
 
 use anyhow::Result;
 use rayon::prelude::*;
+use viter_kaldi::device::DeviceKind;
 use viter_kaldi::gmm::AmDiagGmm;
 use viter_kaldi::hmm::TransitionModel;
 use viter_kaldi::transform::{FmllrDiagGmmAccs, Mat};
@@ -205,59 +206,115 @@ pub fn estimate_fmllr(
 
     let bar = ctx.progress.bar("fmllr", num_speakers as u64);
     let silence_weight = cfg.silence_weight;
-    let transforms: Vec<Option<Mat>> = by_speaker
-        .par_iter()
-        .enumerate()
-        .map(|(spk, entries)| {
-            // A speaker with thousands of utterances (single-speaker TTS corpora)
-            // must not serialize on one core: accumulate per utterance chunk in
-            // parallel and reduce, the sums are exact up to f64 rounding order.
-            let accumulate = |chunk: &[usize]| -> FmllrDiagGmmAccs {
-                let mut accs = FmllrDiagGmmAccs::new(dim);
-                let mut posteriors: Vec<f32> = Vec::new();
-                for &i in chunk {
-                    let Some(ali) = &alignments[i] else { continue };
-                    let f = &feats[i];
-                    let frames = ali.tids.len().min(f.nrows());
-                    for t in 0..frames {
-                        let pdf = tm.transition_id_to_pdf(ali.tids[t]);
-                        let row = f.row(t);
-                        let x = row.as_slice().expect("feature rows are contiguous");
-                        let gmm = am.pdf(pdf);
-                        gmm.component_posteriors(x, &mut posteriors);
-                        if silence_pdfs.contains(&pdf) {
-                            if silence_weight == 0.0 {
-                                continue;
-                            }
-                            for p in posteriors.iter_mut() {
-                                *p *= silence_weight;
-                            }
-                        }
-                        accs.accumulate_from_posteriors(gmm, x, &posteriors);
-                    }
-                }
-                accs
-            };
-            let chunk = (entries.len() / (rayon::current_num_threads() * 4)).max(8);
-            let accs = entries.par_chunks(chunk).map(accumulate).reduce(
-                || FmllrDiagGmmAccs::new(dim),
-                |mut a, b| {
-                    a.add(&b);
-                    a
-                },
-            );
-            bar.inc(1);
-            if accs.count() < cfg.fmllr.min_count {
-                // Too little data to adapt this speaker reliably.
-                return None;
+
+    // Per-frame aligned pdf and weight for every utterance, shared by both paths.
+    // Silence frames are scaled by `silence_weight` (MFA uses 0.0, so they drop out).
+    let per_utt: Vec<Option<(Vec<u32>, Vec<f32>)>> = (0..utts.len())
+        .into_par_iter()
+        .map(|i| {
+            let ali = alignments[i].as_ref()?;
+            let frames = ali.tids.len().min(feats[i].nrows());
+            let mut pdfs = Vec::with_capacity(frames);
+            let mut ws = Vec::with_capacity(frames);
+            for t in 0..frames {
+                let pdf = tm.transition_id_to_pdf(ali.tids[t]);
+                pdfs.push(pdf);
+                ws.push(if silence_pdfs.contains(&pdf) {
+                    silence_weight
+                } else {
+                    1.0
+                });
             }
-            // Start from the speaker's existing transform so estimation is incremental
-            // across fMLLR iterations, as Kaldi's gmm-est-fmllr does.
-            let prior = ctx.feats.fmllr_for(spk);
-            let (mat, _objf, _count) = accs.update(&cfg.fmllr, prior);
-            Some(mat)
+            Some((pdfs, ws))
         })
         .collect();
+
+    // On the GPU the whole speaker is one batched accumulation (two compute kernels
+    // over the concatenated frames); the device serializes speakers itself, so this
+    // loop stays sequential. On the CPU, keep the rayon-over-chunks path.
+    let estimate = |spk: usize, accs: FmllrDiagGmmAccs| -> Option<Mat> {
+        bar.inc(1);
+        if accs.count() < cfg.fmllr.min_count {
+            // Too little data to adapt this speaker reliably.
+            return None;
+        }
+        // Start from the speaker's existing transform so estimation is incremental
+        // across fMLLR iterations, as Kaldi's gmm-est-fmllr does.
+        let prior = ctx.feats.fmllr_for(spk);
+        let (mat, _objf, _count) = accs.update(&cfg.fmllr, prior);
+        Some(mat)
+    };
+
+    let transforms: Vec<Option<Mat>> = if ctx.device.kind() == DeviceKind::Gpu {
+        by_speaker
+            .iter()
+            .enumerate()
+            .map(|(spk, entries)| {
+                let live: Vec<usize> = entries
+                    .iter()
+                    .copied()
+                    .filter(|&i| per_utt[i].is_some())
+                    .collect();
+                let f: Vec<&Feats> = live.iter().map(|&i| &feats[i]).collect();
+                let p: Vec<&[u32]> = live
+                    .iter()
+                    .map(|&i| per_utt[i].as_ref().expect("filtered").0.as_slice())
+                    .collect();
+                let w: Vec<&[f32]> = live
+                    .iter()
+                    .map(|&i| per_utt[i].as_ref().expect("filtered").1.as_slice())
+                    .collect();
+                let mut accs = FmllrDiagGmmAccs::new(dim);
+                ctx.device.fmllr_accumulate_batch(&f, &p, &w, am, &mut accs);
+                estimate(spk, accs)
+            })
+            .collect()
+    } else {
+        by_speaker
+            .par_iter()
+            .enumerate()
+            .map(|(spk, entries)| {
+                // A speaker with thousands of utterances (single-speaker TTS corpora)
+                // must not serialize on one core: accumulate per utterance chunk in
+                // parallel and reduce, the sums are exact up to f64 rounding order.
+                let accumulate = |chunk: &[usize]| -> FmllrDiagGmmAccs {
+                    let mut accs = FmllrDiagGmmAccs::new(dim);
+                    let mut posteriors: Vec<f32> = Vec::new();
+                    for &i in chunk {
+                        let Some((pdfs, ws)) = &per_utt[i] else {
+                            continue;
+                        };
+                        let f = &feats[i];
+                        for t in 0..pdfs.len() {
+                            if ws[t] == 0.0 {
+                                continue;
+                            }
+                            let row = f.row(t);
+                            let x = row.as_slice().expect("feature rows are contiguous");
+                            let gmm = am.pdf(pdfs[t]);
+                            gmm.component_posteriors(x, &mut posteriors);
+                            if ws[t] != 1.0 {
+                                for pp in posteriors.iter_mut() {
+                                    *pp *= ws[t];
+                                }
+                            }
+                            accs.accumulate_from_posteriors(gmm, x, &posteriors);
+                        }
+                    }
+                    accs
+                };
+                let chunk = (entries.len() / (rayon::current_num_threads() * 4)).max(8);
+                let accs = entries.par_chunks(chunk).map(accumulate).reduce(
+                    || FmllrDiagGmmAccs::new(dim),
+                    |mut a, b| {
+                        a.add(&b);
+                        a
+                    },
+                );
+                estimate(spk, accs)
+            })
+            .collect()
+    };
     bar.finish();
 
     let adapted = transforms.iter().filter(|t| t.is_some()).count();

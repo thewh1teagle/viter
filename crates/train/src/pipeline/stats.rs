@@ -8,9 +8,10 @@
 //! unboosted model.
 
 use rayon::prelude::*;
+use viter_kaldi::device::Device;
 use viter_kaldi::gmm::{self, AccumAmDiagGmm, AmDiagGmm, GmmFlags, MleDiagGmmOptions};
 use viter_kaldi::hmm::{MleTransitionUpdateConfig, TransitionAccs, TransitionModel};
-use viter_kaldi::types::{Alignment, Feats};
+use viter_kaldi::types::{Alignment, Feats, PdfId};
 
 use super::progress::Bar;
 
@@ -35,28 +36,82 @@ impl Stats {
     }
 }
 
-/// Accumulate over every aligned utterance in parallel.
+/// Accumulate over every aligned utterance.
 ///
-/// Each rayon task builds its own accumulators and they are reduced with `add`, which
-/// is exactly how MFA sums the per-job accumulators (`base.py:309-321`).
+/// GMM statistics go through [`Device::accumulate_batch`], which on the GPU runs the
+/// per-frame posterior and the per-gaussian reduction as two compute kernels against
+/// the already-resident packed model. Transition statistics stay on the CPU: they are
+/// one counter bump per frame and cost nothing next to the GMM work.
+///
 /// Utterances whose alignment is `None` are skipped.
 pub fn accumulate(
+    device: &Device,
     am: &AmDiagGmm,
     tm: &TransitionModel,
     alignments: &[Option<Alignment>],
     feats: &[Feats],
     bar: &Bar,
 ) -> Stats {
-    accumulate_inner(am, tm, alignments, feats, None, bar)
+    let mut out = Stats {
+        gmm: AccumAmDiagGmm::new(am, GmmFlags::ALL),
+        transitions: TransitionAccs(vec![0.0; tm.num_transition_ids() + 1]),
+    };
+
+    // Frames aligned to each pdf, plus the transition counts, in one CPU pass.
+    // Utterances are handled in batches so the f32 GPU sums stay small (see the
+    // precision note in `viter_kaldi::device::accum`).
+    let ready: Vec<usize> = (0..alignments.len())
+        .filter(|&i| alignments[i].is_some())
+        .collect();
+
+    for chunk in ready.chunks(ACCUM_BATCH) {
+        let prepared: Vec<(usize, Vec<PdfId>)> = chunk
+            .par_iter()
+            .map(|&i| {
+                let ali = alignments[i].as_ref().expect("filtered to Some");
+                let n = ali.tids.len().min(feats[i].nrows());
+                let pdfs = (0..n)
+                    .map(|t| tm.transition_id_to_pdf(ali.tids[t]))
+                    .collect();
+                (i, pdfs)
+            })
+            .collect();
+
+        for (i, _) in &prepared {
+            let ali = alignments[*i].as_ref().expect("filtered to Some");
+            let n = ali.tids.len().min(feats[*i].nrows());
+            for t in 0..n {
+                tm.accumulate(&mut out.transitions, ali.tids[t], 1.0);
+            }
+        }
+
+        let _t = std::time::Instant::now();
+        let f: Vec<&Feats> = prepared.iter().map(|(i, _)| &feats[*i]).collect();
+        let p: Vec<&[PdfId]> = prepared.iter().map(|(_, v)| v.as_slice()).collect();
+        device.accumulate_batch(&f, &p, None, am, &mut out.gmm);
+        tracing::debug!(
+            us = _t.elapsed().as_micros() as u64,
+            utts = chunk.len(),
+            "accumulate_batch"
+        );
+        bar.inc(chunk.len() as u64);
+    }
+    bar.inc((alignments.len() - ready.len()) as u64);
+    out
 }
+
+/// Utterances per device accumulation batch. Large enough to fill the GPU, small
+/// enough that the f32 per-batch sums round negligibly against the f64 totals.
+const ACCUM_BATCH: usize = 256;
 
 /// As `accumulate`, but posteriors come from `post_feats` while the statistics are
 /// gathered on `stats_feats`.
 ///
-/// With the same slice for both this is plain `gmm-acc-stats-ali`. With adapted
-/// features for posteriors and speaker-independent features for stats it is
-/// `gmm-acc-stats-twofeats`, which SAT uses to build the SI alignment model
+/// With adapted features for posteriors and speaker-independent features for stats
+/// this is `gmm-acc-stats-twofeats`, which SAT uses to build the SI alignment model
 /// (`acoustic_modeling/sat.py:313-376`, kalpy `gmm/train.py:161 TwoFeatsStatsAccumulator`).
+/// Two feature streams do not fit the single-stream device kernel, so this stays on
+/// the CPU.
 pub fn accumulate_with(
     am: &AmDiagGmm,
     tm: &TransitionModel,
@@ -65,35 +120,16 @@ pub fn accumulate_with(
     stats_feats: &[Feats],
     bar: &Bar,
 ) -> Stats {
-    accumulate_inner(am, tm, alignments, post_feats, Some(stats_feats), bar)
-}
-
-/// `stats_feats = None` means single-feature accumulation.
-fn accumulate_inner(
-    am: &AmDiagGmm,
-    tm: &TransitionModel,
-    alignments: &[Option<Alignment>],
-    post_feats: &[Feats],
-    stats_feats: Option<&[Feats]>,
-    bar: &Bar,
-) -> Stats {
     let identity = || Stats {
         gmm: AccumAmDiagGmm::new(am, GmmFlags::ALL),
         transitions: TransitionAccs(vec![0.0; tm.num_transition_ids() + 1]),
     };
 
-    let reduced = (0..alignments.len())
+    (0..alignments.len())
         .into_par_iter()
         .fold(identity, |mut acc, i| {
             if let Some(ali) = &alignments[i] {
-                accumulate_one(
-                    am,
-                    tm,
-                    ali,
-                    &post_feats[i],
-                    stats_feats.map(|s| &s[i]),
-                    &mut acc,
-                );
+                accumulate_one(am, tm, ali, &post_feats[i], Some(&stats_feats[i]), &mut acc);
             }
             bar.inc(1);
             acc
@@ -104,8 +140,7 @@ fn accumulate_inner(
                 *x += *y;
             }
             a
-        });
-    reduced
+        })
 }
 
 /// One utterance's contribution. Viterbi alignment means the posterior is 1.0 on the

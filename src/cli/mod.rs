@@ -280,7 +280,6 @@ pub fn peak_rss() -> Option<String> {
     })
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

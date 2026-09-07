@@ -130,7 +130,8 @@ impl FmllrDiagGmmAccs {
     }
 
     #[inline]
-    pub(super) fn k_at(&self, i: usize, j: usize) -> f64 {
+    /// Element `(i, j)` of `K`.
+    pub fn k_at(&self, i: usize, j: usize) -> f64 {
         self.k[i * (self.dim + 1) + j]
     }
 
@@ -195,6 +196,50 @@ impl FmllrDiagGmmAccs {
         }
 
         self.single.reset();
+    }
+
+    /// Element `(r, c)` of the symmetric `G[i]`.
+    pub fn g_at(&self, i: usize, r: usize, c: usize) -> f64 {
+        self.g[i].get(r, c)
+    }
+
+    /// Commit any pending single-frame stats, so `beta`/`k`/`g` are complete.
+    ///
+    /// The per-frame path defers one frame's outer product (Kaldi's trick); a caller
+    /// mixing it with [`Self::add_batch_sums`] must flush first.
+    pub fn commit_pending(&mut self) {
+        self.commit_single_frame_stats();
+    }
+
+    /// Add pre-summed batch statistics: `beta` count, `k` as row-major `[dim, dim+1]`,
+    /// and `g` as `dim` row-major `[dim+1, dim+1]` blocks (both triangles filled).
+    ///
+    /// This is what the GPU accumulator produces for a whole batch of frames at once,
+    /// bypassing the per-frame `SingleFrameStats` path; the sums are mathematically
+    /// identical, only the summation order (and the f32 intermediate on the device)
+    /// differs. Any pending single-frame stats are committed first.
+    pub fn add_batch_sums(&mut self, beta: f64, k: &[f64], g: &[f64]) {
+        let dim = self.dim;
+        let dim1 = dim + 1;
+        assert_eq!(k.len(), dim * dim1, "fMLLR: batch K has the wrong shape");
+        assert_eq!(
+            g.len(),
+            dim * dim1 * dim1,
+            "fMLLR: batch G has the wrong shape"
+        );
+        self.commit_single_frame_stats();
+        self.beta += beta;
+        for (dst, src) in self.k.iter_mut().zip(k) {
+            *dst += *src;
+        }
+        for i in 0..dim {
+            let block = &g[i * dim1 * dim1..(i + 1) * dim1 * dim1];
+            for r in 0..dim1 {
+                for c in 0..dim1 {
+                    self.g[i].m[(r, c)] += block[r * dim1 + c];
+                }
+            }
+        }
     }
 
     /// Kaldi `FmllrDiagGmmAccs::AccumulateFromPosteriors(gmm, data, posterior)`.

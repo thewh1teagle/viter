@@ -125,7 +125,7 @@ pub fn run(ctx: &mut StageCtx<'_>, cfg: &MonoConfig) -> Result<StageOutput> {
         .bar("mono iter 0 · accumulate", utts.len() as u64);
     let st = {
         let m = ctx.model();
-        stats::accumulate(&m.am, &m.tm, &outcome.alignments, &feats, &bar)
+        stats::accumulate(ctx.device, &m.am, &m.tm, &outcome.alignments, &feats, &bar)
     };
     bar.finish();
 

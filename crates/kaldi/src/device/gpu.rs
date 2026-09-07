@@ -56,7 +56,7 @@ fn pad_rows_into(out: &mut Vec<f32>, src: &[f32], rows: usize, width: usize, pad
 }
 
 /// The packed model resident in GPU memory.
-struct ResidentModel {
+pub(super) struct ResidentModel {
     version: u64,
     rows: wgpu::Buffer,
     seg_start: wgpu::Buffer,
@@ -64,6 +64,25 @@ struct ResidentModel {
     /// Padded row width in floats.
     width: u32,
     num_pdfs: usize,
+}
+
+impl ResidentModel {
+    pub(super) fn rows(&self) -> &wgpu::Buffer {
+        &self.rows
+    }
+    pub(super) fn seg_start(&self) -> &wgpu::Buffer {
+        &self.seg_start
+    }
+    pub(super) fn seg_end(&self) -> &wgpu::Buffer {
+        &self.seg_end
+    }
+    /// Padded row width in floats (a multiple of 4).
+    pub(super) fn width(&self) -> u32 {
+        self.width
+    }
+    pub(super) fn num_pdfs(&self) -> usize {
+        self.num_pdfs
+    }
 }
 
 /// Persistent per-submit buffers, grown when a group needs more.
@@ -90,6 +109,8 @@ pub(crate) struct GpuContext {
     job_stride: u64,
     model: Mutex<Option<ResidentModel>>,
     scratch: Mutex<Option<Scratch>>,
+    /// Built on first fMLLR accumulation, then reused.
+    fmllr: std::sync::OnceLock<super::fmllr::FmllrPipelines>,
 }
 
 impl GpuContext {
@@ -185,7 +206,42 @@ impl GpuContext {
             job_stride,
             model: Mutex::new(None),
             scratch: Mutex::new(None),
+            fmllr: std::sync::OnceLock::new(),
         })
+    }
+
+    /// The fMLLR compute pipelines, compiled on first use.
+    pub(super) fn fmllr_pipelines(&self) -> &super::fmllr::FmllrPipelines {
+        self.fmllr
+            .get_or_init(|| super::fmllr::FmllrPipelines::new(&self.device))
+    }
+
+    pub(super) fn wgpu_device(&self) -> &wgpu::Device {
+        &self.device
+    }
+
+    pub(super) fn wgpu_queue(&self) -> &wgpu::Queue {
+        &self.queue
+    }
+
+    pub(super) fn max_buffer_bytes(&self) -> u64 {
+        self.max_buffer_bytes
+    }
+
+    /// Make the packed model resident (uploading it if the version changed) and
+    /// run `f` against it while the model lock is held.
+    pub(super) fn with_model<R>(
+        &self,
+        am_version: u64,
+        packed_rows: &Array2<f32>,
+        offsets: &[u32],
+        f: impl FnOnce(&ResidentModel) -> R,
+    ) -> R {
+        let mut model = self.model.lock().expect("gpu model mutex poisoned");
+        if model.as_ref().map(|m| m.version) != Some(am_version) {
+            *model = Some(self.upload_model(am_version, packed_rows, offsets));
+        }
+        f(model.as_ref().expect("just populated"))
     }
 
     pub(crate) fn adapter_name(&self) -> &str {

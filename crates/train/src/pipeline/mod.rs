@@ -281,7 +281,7 @@ pub fn run_iterations(
         );
         let st = {
             let m = ctx.model();
-            stats::accumulate(&m.am, &m.tm, &alignments, &feats, &bar)
+            stats::accumulate(ctx.device, &m.am, &m.tm, &alignments, &feats, &bar)
         };
         bar.finish();
 
