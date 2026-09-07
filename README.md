@@ -15,6 +15,7 @@
 | Train on LJSpeech, 23.9 h, same recipe | 42 min | **10 min** |
 | Same, short schedule | | **2 min** |
 | Phone boundaries within 20 ms of MFA | | **95.7%** |
+| Phone boundaries within 25 ms of TIMIT hand labels, trained on TIMIT | 85.3% ([published](docs/TIMIT.md)) | **88.2%** |
 | Output | Praat TextGrids | the same TextGrids |
 | Viewer | Praat | `viter serve` |
 
@@ -46,6 +47,7 @@ viter serve out/
 | [Architecture](docs/ARCHITECTURE.md) | Crates, GPU path, no FSTs |
 | [Viewer](docs/VIEWER.md) | The `serve` app and its shortcuts |
 | [Parity](docs/PARITY.md) | Agreement with MFA, measured |
+| [TIMIT](docs/TIMIT.md) | Accuracy against hand-labelled phone boundaries |
 | [Development](docs/DEVELOPMENT.md) | Workspace, tests, rules |
 
 MIT.
