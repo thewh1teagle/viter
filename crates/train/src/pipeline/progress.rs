@@ -36,7 +36,15 @@ fn log_line(text: &str) {
 
 const LIVE_TEMPLATE: &str = "{prefix:>12.green.bold} [{bar:25}] {pos}/{len}: {msg}";
 const SPIN_TEMPLATE: &str = "{prefix:>12.green.bold} {spinner} {msg}";
-const VERB_WIDTH: usize = 12;
+const VERB_WIDTH: usize = 16;
+
+/// `3/8 Triphone`: the stage's position in the plan plus its verb.
+fn label(st: &State, name: &str) -> String {
+    match st.plan.iter().position(|(s, _)| s == name) {
+        Some(i) => format!("{}/{} {}", i + 1, st.plan.len(), verb(name)),
+        None => verb(name).to_string(),
+    }
+}
 
 /// Human verb for a stage key, right-aligned like cargo's `Compiling`.
 fn verb(name: &str) -> &str {
@@ -145,38 +153,25 @@ impl Progress {
 
     /// Begin a stage: the live line now belongs to it.
     pub fn stage(&self, name: &str, detail: &str) {
-        {
+        let lab = {
             let mut st = self.state.lock().unwrap();
             st.stage = name.to_string();
             st.stage_started = Some(Instant::now());
             st.last = None;
             st.step.clear();
-        }
-        let counter = self.counter(name);
-        self.state.lock().unwrap().stage_frac = 0.0;
-        log_line(&format!(
-            "{:>w$} {counter}{detail}",
-            verb(name),
-            w = VERB_WIDTH
-        ));
+            st.stage_frac = 0.0;
+            label(&st, name)
+        };
+        log_line(&format!("{lab:>w$} {detail}", w = VERB_WIDTH));
         if self.quiet {
-            eprintln!("{:>w$} {counter}{detail}", verb(name), w = VERB_WIDTH);
+            eprintln!("{lab:>w$} {detail}", w = VERB_WIDTH);
         } else {
             self.live.set_style(spin_style());
-            self.live.set_prefix(verb(name).to_string());
+            self.live.set_prefix(lab);
             self.live.set_message(format!("{}", style(detail).dim()));
             self.live.enable_steady_tick(Duration::from_millis(100));
         }
         tracing::debug!(stage = name, "{detail}");
-    }
-
-    fn counter(&self, name: &str) -> String {
-        let st = self.state.lock().unwrap();
-        st.plan
-            .iter()
-            .position(|(s, _)| s == name)
-            .map(|i| format!("[{}/{}] ", i + 1, st.plan.len()))
-            .unwrap_or_default()
     }
 
     /// Right-hand side of the live line: `stage 3/5 · 47% · ~2m left`.
@@ -324,9 +319,10 @@ impl Progress {
             self.live.set_message(String::new());
             self.live.disable_steady_tick();
         }
+        let lab = label(&self.state.lock().unwrap(), name);
         self.println(format!(
             "{:>w$} {}  {}",
-            style(verb(name)).green().bold(),
+            style(lab).green().bold(),
             parts.join(" · "),
             style(elapsed).dim(),
             w = VERB_WIDTH
@@ -418,11 +414,7 @@ fn overall_of(st: &State) -> String {
     let cur_w = idx.map(|i| st.plan[i].1).unwrap_or(0.0);
     let done = st.done_units + cur_w * st.stage_frac;
     let frac = (done / total).clamp(0.0, 1.0);
-    let mut out = match idx {
-        Some(i) => format!("stage {}/{}", i + 1, st.plan.len()),
-        None => String::new(),
-    };
-    out.push_str(&format!(" · {:.0}%", frac * 100.0));
+    let mut out = format!("{:.0}%", frac * 100.0);
     if let Some(t0) = st.run_started
         && frac > 0.02
     {
@@ -475,10 +467,12 @@ impl Bar {
         match &self.inner {
             None => self.pb.inc(n),
             Some(ic) => {
-                let done = ic.done.fetch_add(n, Ordering::Relaxed) + n;
-                // Refresh the text about 100 times per step, not per item.
+                let before = ic.done.fetch_add(n, Ordering::Relaxed);
+                let done = before + n;
+                // Refresh the text about 100 times per step, not per item: whenever
+                // this increment crosses a 1% boundary (increments may be large).
                 let every = (ic.len / 100).max(1);
-                if done % every == 0 || done >= ic.len {
+                if before / every != done / every || done >= ic.len {
                     let mut st = self.state.lock().unwrap();
                     let within = (done.min(ic.len) as f64) / ic.len.max(1) as f64;
                     st.stage_frac = ((ic.iter.saturating_sub(1) as f64 + within)
