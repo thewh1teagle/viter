@@ -9,13 +9,14 @@
 pub mod align;
 pub mod features;
 pub mod progress;
+pub mod refine;
 pub mod stats;
 
 use anyhow::{Context, Result, anyhow};
 use rand::SeedableRng;
 use rand_xoshiro::Xoshiro256PlusPlus;
 use rayon::prelude::*;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 use viter_io::corpus::Corpus;
 use viter_kaldi::align::AlignOptions;
@@ -808,6 +809,8 @@ pub struct AlignOverrides {
     pub final_non_silence_correction: Option<f32>,
     /// 1.0 = no boost (MFA's align default).
     pub boost_silence: Option<f32>,
+    /// Refine phone boundaries to 1 ms after alignment (see [`refine`]).
+    pub refine: Option<refine::RefineOptions>,
 }
 
 pub fn align_corpus_with(
@@ -916,12 +919,13 @@ pub fn align_corpus_with(
     bar.finish();
 
     // Pass 2: fMLLR-adapted realignment.
+    let mut transforms: Vec<Option<Mat>> = vec![None; ctx.feats.num_speakers()];
     if model.am_si.is_some() {
         let fmllr_cfg = crate::config::SatConfig {
             fmllr: model.fmllr.clone().unwrap_or_else(|| cfg.sat.fmllr.clone()),
             ..cfg.sat.clone()
         };
-        let transforms = sat::estimate_fmllr(
+        transforms = sat::estimate_fmllr(
             &ctx,
             &model.tm,
             &model.am,
@@ -955,7 +959,7 @@ pub fn align_corpus_with(
         ));
     }
 
-    let intervals: Vec<Option<IntervalAlignment>> = outcome
+    let mut intervals: Vec<Option<IntervalAlignment>> = outcome
         .alignments
         .par_iter()
         .enumerate()
@@ -968,6 +972,32 @@ pub fn align_corpus_with(
             })
         })
         .collect();
+
+    if let Some(ropts) = &over.refine {
+        let bar = progress.bar("refine", utts.len() as u64);
+        let audio: Vec<PathBuf> = corpus.utts.iter().map(|u| u.audio.clone()).collect();
+        let feats = &ctx.feats;
+        let lda = model.lda.as_ref().map(|m| ((sl, sr), m));
+        intervals = refine::refine_all(
+            &audio,
+            |u| {
+                bar.inc(1);
+                refine::UttFeatureSetup {
+                    mfcc: &model.mfcc,
+                    cmvn: feats.cmvn_stats(feats.speaker_of(u)),
+                    deltas: &cfg.deltas,
+                    lda,
+                    fmllr: transforms[feats.speaker_of(u)].as_ref(),
+                }
+            },
+            &model.tm,
+            &model.am,
+            &outcome.alignments,
+            &intervals,
+            ropts,
+        );
+        bar.finish();
+    }
 
     progress.stage_done(
         "align",

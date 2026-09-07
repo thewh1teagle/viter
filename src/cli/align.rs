@@ -67,6 +67,11 @@ pub struct AlignArgs {
     #[arg(long, value_name = "F")]
     pub final_non_silence_correction: Option<f32>,
 
+    /// Keep phone boundaries on the 10 ms frame grid (MFA's output) instead of
+    /// refining each one to 1 ms by rescoring a window around it
+    #[arg(long)]
+    pub no_refine: bool,
+
     /// Also write a CTM file next to the TextGrids
     #[arg(long)]
     pub ctm: bool,
@@ -177,6 +182,7 @@ pub fn run(args: AlignArgs) -> anyhow::Result<()> {
         final_silence_correction: args.final_silence_correction,
         final_non_silence_correction: args.final_non_silence_correction,
         boost_silence: args.boost_silence,
+        refine: (!args.no_refine).then(viter_train::pipeline::refine::RefineOptions::default),
     };
     let results = viter_train::pipeline::align_corpus_with(
         &corpus,

@@ -436,14 +436,16 @@ pub fn from_alignment(
     // boundaries print as 0.08 rather than 0.07999999821186066 like MFA/praatio.
     let shift = (a.frame_shift_s as f64 * 1e6).round() / 1e6;
     let duration = round6(duration_s.max(0.0));
-    let snap = shift * 2.0;
+    // MFA snaps a final interval that lands within two (10 ms) frames of the end;
+    // refined alignments count in 1 ms ticks, so the tolerance is fixed, not `shift`.
+    let snap = 0.02;
 
     let mut phone_ivs: Vec<Interval> = a
         .phones
         .iter()
         .map(|p| Interval {
-            xmin: p.start_frame as f64 * shift,
-            xmax: p.end_frame as f64 * shift,
+            xmin: round6(p.start_frame as f64 * shift),
+            xmax: round6(p.end_frame as f64 * shift),
             text: untag_phone(phones.sym(p.phone)).to_string(),
         })
         .collect();
@@ -452,8 +454,8 @@ pub fn from_alignment(
         .words
         .iter()
         .map(|w| Interval {
-            xmin: w.start_frame as f64 * shift,
-            xmax: w.end_frame as f64 * shift,
+            xmin: round6(w.start_frame as f64 * shift),
+            xmax: round6(w.end_frame as f64 * shift),
             text: words.get(w.word as usize).cloned().unwrap_or_default(),
         })
         .collect();

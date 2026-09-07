@@ -11,8 +11,9 @@ use std::fmt::Write as _;
 use std::path::Path;
 use viter_kaldi::types::{IntervalAlignment, SymbolTable, untag_phone};
 
-/// Number of decimals Kaldi's CTM writer uses for times.
-const TIME_DECIMALS: usize = 2;
+/// Kaldi's CTM writer uses 2 decimals; refined alignments are on a 1 ms grid, so
+/// 3 are needed to round-trip them (MFA's fine-tuned CTMs round to 3 as well).
+const TIME_DECIMALS: usize = 3;
 
 /// Write a combined CTM containing the phone rows of every alignment.
 ///
@@ -152,14 +153,14 @@ mod tests {
         let s = phone_ctm(&ali, &st);
         assert_eq!(
             s,
-            "utt1 1 0.00 0.10 sil\nutt1 1 0.10 0.15 HH\nutt1 1 0.25 0.15 OW\n"
+            "utt1 1 0.000 0.100 sil\nutt1 1 0.100 0.150 HH\nutt1 1 0.250 0.150 OW\n"
         );
     }
 
     #[test]
     fn word_rows() {
         let (ali, _, words) = fixture();
-        assert_eq!(word_ctm(&ali, &words), "utt1 1 0.10 0.30 hello\n");
+        assert_eq!(word_ctm(&ali, &words), "utt1 1 0.100 0.300 hello\n");
     }
 
     #[test]

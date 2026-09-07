@@ -53,6 +53,7 @@ single audio file.
 | `--text "..."` | none | inline transcript for the single-file form, instead of a `.txt`/`.lab` |
 | `--beam <N>` | 10 | Viterbi beam |
 | `--retry-beam <N>` | 40 | wider beam used only for utterances that fail at `--beam` |
+| `--no-refine` | off | keep boundaries on the 10 ms frame grid (MFA's output) |
 | `--cpu` | off | force the CPU scoring path |
 | `--ctm` | off | write Kaldi/MFA CTM (`utt 1 start dur label`) instead of TextGrids |
 
@@ -60,6 +61,14 @@ Output mirrors the corpus layout: an utterance at `corpus/spk/utt.wav` becomes
 `out_dir/spk/utt.TextGrid`, with `words` and `phones` interval tiers. If the model was trained
 with SAT (`am_si` present), alignment automatically runs two passes — speaker-independent
 align, per-speaker fMLLR estimation, adapted re-align.
+
+Boundaries are then refined to 1 ms: a window of up to ±30 ms around each one is rescored
+with 1 ms-shifted features and the two phones' core pdfs, and the boundary goes where their
+likelihood ratio crosses the midpoint of its range. This is MFA's `--fine_tune` with a wider
+window and steadier pdfs; on TIMIT it moves phone boundaries within 10 ms of the hand labels
+from 50% to 58% ([TIMIT.md](TIMIT.md)). `--no-refine` gives the frame-grid alignment the
+decoder produced, which is what MFA writes without `--fine_tune` and what the parity numbers
+in [PARITY.md](PARITY.md) are measured on. CTM times have 3 decimals either way.
 
 Raising `--beam` fixes utterances that fail to align, at a cost in time; a widespread failure
 usually means a transcript/audio mismatch rather than too narrow a beam.

@@ -26,46 +26,73 @@ uv run plans/timit/timit_002.py data/timit-test-tg
 ## Results
 
 viter, full schedule (mono → tri → LDA+MLLT → SAT ×3 with pronunciation probabilities),
-trained on TRAIN in 31 min (of which ~28 min is per-speaker fMLLR, see issue #10), aligned
-TEST in 72 s. 0 failed utterances, 0 label mismatches.
+trained on TRAIN in 31 min before the fMLLR fix of issue #10 (~5 min after), aligned TEST
+in 18 s including boundary refinement. 0 failed utterances, 0 label mismatches.
 
 TEST (1344 utterances, 50,337 phone boundaries) vs hand labels:
 
 | system | ≤10 ms | ≤20 ms | ≤25 ms | ≤50 ms | median | mean |
 |---|---|---|---|---|---|---|
-| **viter, trained on TIMIT** | **49.9%** | **80.7%** | **88.2%** | **97.7%** | 10.0 ms | 13.6 ms |
+| **viter, trained on TIMIT** | **58.0%** | **84.3%** | **89.5%** | **97.7%** | 8.3 ms | 12.2 ms |
+| viter, `--no-refine` (10 ms frame grid, MFA's output) | 49.9% | 80.7% | 88.2% | 97.7% | 10.0 ms | 13.6 ms |
 | MFA trained on TIMIT (McAuliffe 2026) | 63.6% | — | 85.3% | 97.1% | — | 12.0 ms |
 | MFA `english_us_arpa` 3.0 (McAuliffe 2026) | 61.9% | — | 83.6% | 97.4% | — | 12.1 ms |
 | MAUS (McAuliffe 2026) | 63.6% | — | 86.8% | 97.8% | — | 11.3 ms |
 
-TRAIN (seen data, the training-time TextGrids, 3696 utterances, 139k boundaries):
+TRAIN (seen data, the training-time TextGrids, frame grid, 3696 utterances, 139k boundaries):
 
 | system | ≤10 ms | ≤20 ms | ≤25 ms | ≤50 ms | median | mean |
 |---|---|---|---|---|---|---|
 | viter | 50.9% | 81.7% | 89.1% | 98.0% | 9.7 ms | 12.9 ms |
 
-viter is at or above the published GMM-HMM numbers at 25 and 50 ms and ~13 points below
-them at 10 ms. The published runs are on a different test subset with MFA's own silence
-handling, so the 25 ms column is the comparable one; the 10 ms gap is large enough to be
-real and is the thing to investigate (a systematic offset of a few ms on some boundary
-types, not wrong paths — the label sequences all match and p95 is 37 ms).
+viter is above the published GMM-HMM numbers at 25 and 50 ms and below them at 10 ms. The
+published runs are on a different test subset with MFA's own silence handling, so the 25 ms
+column is the comparable one.
 
-Per phone class on TEST (viter):
+### The 10 ms column (issue #12)
+
+On the frame grid the error is not noise but a bias by transition class: boundaries *into*
+low-energy segments (closures, stops, silence-adjacent `hh`/`dh`) land 12-30 ms early and
+boundaries out of them into vowels 2-7 ms late, while vowel-to-vowel-like boundaries are
+unbiased. The decoder switches phones where the two *boundary* HMM states' likelihoods
+cross, and those states were trained on exactly the transition frames. Removing each
+transition class's mean bias (an oracle) takes the 10 ms figure to 68%, so that is the
+whole story. `plans/timit/timit_004.py` prints the signed breakdown.
+
+`viter align` therefore refines every boundary to 1 ms by default ([CLI.md](CLI.md)): a
+window of up to ±30 ms is rescored with 1 ms-shifted features and the two phones'
+middle-state pdfs, and the boundary goes where their likelihood ratio crosses the midpoint
+of its own range in the window. That is MFA's `--fine_tune` idea, self-calibrating per
+boundary; MFA uses the boundary-state pdfs and a ±10 ms window, which on this data gives
+~57% at 10 ms against 58% here. Refined boundaries are placed at the midpoint between the
+centres of the two 1 ms frames they separate, i.e. 4.5 ms after the frame index, which is
+what the frame-grid convention already does at 10 ms.
+
+What remains, from the signed breakdown on TEST after refinement:
+
+- Stops are the worst class (38.8% at 10 ms): the closure→burst boundary is still 14 ms
+  early on average. The burst is a transient that flips the ratio as soon as it enters the
+  25 ms analysis window; a shorter window scored by the 25 ms-trained pdfs did not help.
+- Utterance-initial boundaries (silence → first phone, 3% of boundaries) are 20-25 ms
+  early and refinement cannot move them: TIMIT labels the closure of an initial stop as
+  part of `h#`, while medial closures are their own phones, so the model learned the
+  initial stop as closure+burst and scores the closure frames as the stop.
+- Boundaries into vowels out of glides/nasals are now 5-9 ms late.
+
+Per phone class on TEST (viter, refined):
 
 | class | n | ≤10 ms | ≤20 ms | ≤25 ms | ≤50 ms | median |
 |---|---|---|---|---|---|---|
-| vowel | 12655 | 65.1% | 87.9% | 92.4% | 98.5% | 7.2 ms |
-| diphthong | 4317 | 53.5% | 82.9% | 89.1% | 97.5% | 9.0 ms |
-| glide | 6026 | 49.6% | 71.4% | 79.3% | 94.9% | 10.0 ms |
-| nasal | 4729 | 56.3% | 84.1% | 89.1% | 97.4% | 8.3 ms |
-| fricative | 7498 | 47.0% | 82.4% | 90.1% | 98.2% | 10.7 ms |
-| affricate | 623 | 63.2% | 89.2% | 93.7% | 99.0% | 7.5 ms |
-| stop | 7494 | 33.6% | 71.0% | 82.9% | 97.5% | 13.9 ms |
-| closure | 6995 | 35.2% | 79.6% | 90.2% | 98.5% | 12.5 ms |
+| vowel | 12655 | 64.4% | 86.3% | 91.0% | 98.3% | 6.8 ms |
+| diphthong | 4317 | 59.6% | 82.9% | 88.4% | 97.2% | 7.6 ms |
+| glide | 6026 | 47.5% | 72.1% | 79.6% | 95.1% | 10.8 ms |
+| nasal | 4729 | 64.9% | 85.3% | 89.5% | 97.1% | 7.0 ms |
+| fricative | 7498 | 63.9% | 88.7% | 93.1% | 98.2% | 7.4 ms |
+| affricate | 623 | 64.2% | 89.6% | 93.6% | 98.2% | 7.5 ms |
+| stop | 7494 | 38.8% | 79.1% | 86.5% | 97.8% | 12.8 ms |
+| closure | 6995 | 63.5% | 91.8% | 95.2% | 98.6% | 7.5 ms |
 
-Worst phones at 20 ms (39-fold): `p` 28%, `hh` 54%, `b` 57%, `dh` 61%, `q` 62%, `ng` 68%,
-`w` 69%, `l` 69%. Stops and closures carry most of the 10 ms deficit: the closure→burst
-boundary is where a 10 ms frame grid hurts most, and `p` is an outlier worth a look on its own.
+Worst phones at 20 ms (39-fold): `p` 35%, `hh` 61%, `q` 66%, `l` 69%, `b` 70%.
 
 Word boundaries on TEST (`.WRD` tier, 13,210 boundaries; 8 files skipped where the word
 grouping from `.WRD` disagrees with the phone grouping), for comparison with neural word
@@ -73,7 +100,8 @@ aligners:
 
 | system | ≤10 ms | ≤25 ms | ≤50 ms | ≤100 ms |
 |---|---|---|---|---|
-| **viter, words tier, official TEST** | **41.1%** | **78.2%** | **93.3%** | **98.4%** |
+| **viter, words tier, official TEST** | **47.5%** | **80.2%** | **93.2%** | **98.4%** |
+| viter, `--no-refine` | 41.1% | 78.2% | 93.3% | 98.4% |
 | MWA (Weber 2026, own split, trained on TIMIT words) | 58.0% | 81.3% | 91.6% | 97.8% |
 | MFA pretrained `english_us_arpa`, orthographic input (Rousso 2024 via Weber 2026) | 41.6% | 72.8% | 89.4% | 97.4% |
 | WhisperX (same) | 22.4% | 52.7% | 82.4% | 94.2% |
@@ -93,6 +121,5 @@ Interspeech 2026 (https://arxiv.org/abs/2606.10675), Table 3.
 - No failed utterances and no label-sequence mismatches on TRAIN or TEST at the default beam.
 - Not run yet: `--sat-rounds 1 --no-pron-probs`. With 462 speakers of ~10 utterances each,
   fMLLR has little data per speaker, so the short schedule may lose less here than on LJSpeech.
-- TODO: the 10 ms gap. Candidates: boundary placement inside a frame (viter/MFA both snap to
-  10 ms; the published MFA numbers are on the same grid, so this is not the whole story),
-  transition priors on closure→burst, and `p` specifically.
+- Cheap loop for boundary work: `viter align data/timit/test/DR1 data/timit.viter -o out/DR1`
+  (1.6 s, 88 scored files, within a point of the full set) then `timit_004.py out`.

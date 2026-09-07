@@ -33,6 +33,10 @@ silence-free LDA/MLLT statistics, and MFA's exact pronunciation-probability coun
 Aligning with an imported MFA model reproduces MFA's own TextGrids at 99.8% within 20 ms.
 Tracking issue: https://github.com/thewh1teagle/viter/issues/5.
 
+These are frame-grid numbers: training-time TextGrids, and `viter align --no-refine`. By
+default `align` refines every boundary to 1 ms afterwards ([CLI.md](CLI.md), issue #12),
+which is deliberately *not* what MFA writes; compare against MFA with `--no-refine`.
+
 ## Method
 
 MFA and kalpy are Python wrappers over Kaldi. That makes the reference runnable: a `uv`
