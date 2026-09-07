@@ -142,9 +142,9 @@ impl AlignOutcome {
 /// utterance and the matrix is dropped as soon as its alignment is produced, so a
 /// caller that already has features cached can hand them back by reference.
 ///
-/// Scoring is batched: utterances are processed in chunks of `batch`, and each chunk
-/// asks the device for one score matrix over the union of that chunk's graph pdfs.
-/// The per-utterance Viterbi then runs in parallel over the chunk.
+/// Scoring is batched against each utterance's reachable pdfs. On the GPU a producer
+/// scores the next batch while rayon decodes the current one. A rendezvous channel
+/// keeps at most two batches of scores live; the CPU backend runs sequential batches.
 pub fn align_batch<'g>(
     graphs: impl Into<GraphSlice<'g>>,
     tm: &TransitionModel,
@@ -170,17 +170,17 @@ pub fn align_batch<'g>(
         .collect();
 
     let mut alignments: Vec<Option<Alignment>> = Vec::with_capacity(n);
-    let mut t_score = std::time::Duration::ZERO;
     let mut t_vit = std::time::Duration::ZERO;
-    for (start, end) in chunks {
-        let _t1 = std::time::Instant::now();
+    let score = |start, end| {
+        let started = std::time::Instant::now();
         // Every utterance is scored only against the pdfs its own graph can reach.
         let refs: Vec<&Feats> = (start..end).map(|i| &feats[i]).collect();
         let sels: Vec<&[PdfId]> = (start..end).map(|i| graphs.pdfs(i)).collect();
         let scores = device.score_batch_sel(&refs, am, &sels);
-        t_score += _t1.elapsed();
-        let _t2 = std::time::Instant::now();
-
+        (scores, started.elapsed())
+    };
+    let mut decode = |start, end, scores: Vec<Feats>| {
+        let started = std::time::Instant::now();
         let out: Vec<Option<Alignment>> = (start..end)
             .into_par_iter()
             .zip(scores.par_iter())
@@ -199,9 +199,42 @@ pub fn align_batch<'g>(
                 a
             })
             .collect();
-        t_vit += _t2.elapsed();
+        t_vit += started.elapsed();
         alignments.extend(out);
-    }
+    };
+
+    let t_score = if device.kind() == viter_kaldi::device::DeviceKind::Gpu && chunks.len() > 1 {
+        std::thread::scope(|scope| {
+            // Declared inside the scope so unwinding a decoder panic drops the
+            // receiver before joining the producer, unblocking a pending send.
+            let (tx, rx) = std::sync::mpsc::sync_channel(0);
+            let producer = scope.spawn(move || {
+                let mut elapsed = std::time::Duration::ZERO;
+                for (start, end) in chunks {
+                    let (scores, time) = score(start, end);
+                    elapsed += time;
+                    if tx.send((start, end, scores)).is_err() {
+                        break;
+                    }
+                }
+                elapsed
+            });
+            for (start, end, scores) in rx {
+                decode(start, end, scores);
+            }
+            producer
+                .join()
+                .unwrap_or_else(|e| std::panic::resume_unwind(e))
+        })
+    } else {
+        let mut elapsed = std::time::Duration::ZERO;
+        for (start, end) in chunks {
+            let (scores, time) = score(start, end);
+            elapsed += time;
+            decode(start, end, scores);
+        }
+        elapsed
+    };
     tracing::debug!(
         score_ms = t_score.as_millis(),
         viterbi_ms = t_vit.as_millis(),

@@ -17,9 +17,10 @@ use viter_kaldi::transform::{FmllrDiagGmmAccs, Mat};
 use viter_kaldi::types::{Alignment, Feats};
 
 use crate::config::{GaussianSchedule, SatConfig, Stage};
+use crate::pipeline::iterate::run_iterations_cached;
 use crate::pipeline::{
     FeatureKind, GraphSet, IterationHooks, IterationPlan, StageCtx, StageOutput, UpdateOptions,
-    chunk, run_iterations, stats,
+    chunk, stats,
 };
 use crate::tri::{self, TreeSetup};
 
@@ -121,7 +122,8 @@ pub fn run(ctx: &mut StageCtx<'_>, cfg: &SatConfig, key: &str) -> Result<StageOu
         c.feats.feats_for_many(u, kind)
     };
 
-    let alignments = run_iterations(ctx, &mut plan, &mut hooks, &derive, &mut graphs, converted)?;
+    let alignments =
+        run_iterations_cached(ctx, &mut plan, &mut hooks, &derive, &mut graphs, converted)?;
 
     // Speaker-independent alignment model from two-feature statistics.
     build_align_model(ctx, cfg, &utts, &alignments, &mut plan)?;

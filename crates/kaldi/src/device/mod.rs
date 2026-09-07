@@ -133,7 +133,7 @@ impl Device {
             feats.ncols(),
             am.dim()
         );
-        let packed = am.packed();
+        let packed = am.packed_arc();
         check_pdfs(pdfs, am.num_pdfs());
 
         match &self.backend {
@@ -189,7 +189,7 @@ impl Device {
                 am.dim()
             );
         }
-        let packed = am.packed();
+        let packed = am.packed_arc();
         for sel in sels {
             check_pdfs(sel, am.num_pdfs());
         }

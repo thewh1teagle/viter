@@ -14,9 +14,9 @@ use viter_kaldi::transform::{self, LdaEstimate, LdaEstimateOptions, Mat, MlltAcc
 use viter_kaldi::types::{Alignment, Feats};
 
 use crate::config::{GaussianSchedule, LdaConfig, Stage};
+use crate::pipeline::iterate::run_iterations_cached;
 use crate::pipeline::{
     FeatureKind, GraphSet, IterationHooks, IterationPlan, StageCtx, StageOutput, UpdateOptions,
-    run_iterations,
 };
 use crate::tri::{self, TreeSetup};
 
@@ -150,7 +150,8 @@ pub fn run(ctx: &mut StageCtx<'_>, cfg: &LdaConfig) -> Result<StageOutput> {
         c.feats.feats_for_many(u, FeatureKind::SpliceLda(&lda))
     };
 
-    let alignments = run_iterations(ctx, &mut plan, &mut hooks, &derive, &mut graphs, converted)?;
+    let alignments =
+        run_iterations_cached(ctx, &mut plan, &mut hooks, &derive, &mut graphs, converted)?;
 
     ctx.progress.stage_done("lda", "");
     Ok(StageOutput { utts, alignments })

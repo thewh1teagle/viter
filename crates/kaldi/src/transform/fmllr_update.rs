@@ -7,7 +7,7 @@
 
 use super::Mat;
 use super::fmllr::FmllrDiagGmmAccs;
-use super::linalg::{SpMat, invert_with_logdet, log_abs_det};
+use super::linalg::{SpMat, invert, log_abs_det};
 
 /// Kaldi `FmllrAuxFuncDiagGmm(xform, stats)`:
 /// `beta log|A| + tr(W^T K) - 0.5 sum_d w_d^T G_d w_d`.
@@ -68,7 +68,9 @@ pub(super) fn fmllr_inner_update(
 
     // Matrix of cofactors = transpose of the adjugate: invert A^T.
     let at = faer::Mat::from_fn(dim, dim, |i, j| transform[j * (dim + 1) + i]);
-    let (cofact_mat, _logdet) = invert_with_logdet(at.as_ref());
+    // This row update only needs the inverse. Computing a discarded logdet
+    // would run a second cubic factorization for every row of every iteration.
+    let cofact_mat = invert(at.as_ref());
 
     // Extended cofactor vector for this row: [cofact_mat.row(row); 0].
     let mut cofact_row = vec![0.0f64; dim + 1];

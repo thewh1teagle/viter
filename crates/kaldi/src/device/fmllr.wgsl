@@ -14,9 +14,13 @@
 // zero (silence under MFA's `silence_weight = 0`) write zeros and are skipped, which
 // makes them contribute nothing to either kernel-2 product.
 //
-// The gaussian loop runs three times rather than buffering per-gaussian scores: a
-// pdf can have hundreds of gaussians, far more than fits in registers, and the
-// packed rows it re-reads stay hot in cache.
+// Most pdfs fit in the bounded posterior cache: evaluate each Gaussian once,
+// then accumulate each output dimension in a register and store it once. Pdfs
+// above the cache capacity use the original unbounded three-pass path. The host
+// compiles a separate uncached pipeline for small batches so they do not pay
+// for the cached path's register allocation.
+
+override CACHE_POSTERIORS: bool = false;
 
 struct Params {
     frames: u32,
@@ -58,21 +62,65 @@ fn fmllr_ab(@builtin(global_invocation_id) gid: vec3<u32>) {
     let dim = par.dim;
     let w4 = par.width4;
     let ab_base = t * dim;
-    for (var i: u32 = 0u; i < dim; i = i + 1u) {
-        a_out[ab_base + i] = 0.0;
-        b_out[ab_base + i] = 0.0;
-    }
-    cnt_out[t] = 0.0;
-
     let w = weight[t];
     let pdf = pdf_of[t];
     let lo = seg_start[pdf];
     let hi = seg_end[pdf];
     if (w == 0.0 || hi <= lo) {
+        for (var i: u32 = 0u; i < dim; i = i + 1u) {
+            a_out[ab_base + i] = 0.0;
+            b_out[ab_base + i] = 0.0;
+        }
+        cnt_out[t] = 0.0;
         return;
     }
     let f_off = t * w4;
 
+    if (CACHE_POSTERIORS && hi - lo <= 128u) {
+        var post: array<f32, 128>;
+        var mx: f32 = -3.4028235e38;
+        for (var g: u32 = lo; g < hi; g = g + 1u) {
+            let ll = score(g, f_off, w4);
+            post[g - lo] = ll;
+            mx = max(mx, ll);
+        }
+        var sum: f32 = 0.0;
+        for (var g: u32 = lo; g < hi; g = g + 1u) {
+            let p = exp(post[g - lo] - mx);
+            post[g - lo] = p;
+            sum = sum + p;
+        }
+        let inv = w / sum;
+        var count: f32 = 0.0;
+        for (var g: u32 = lo; g < hi; g = g + 1u) {
+            let p = post[g - lo] * inv;
+            post[g - lo] = p;
+            count = count + p;
+        }
+        for (var i: u32 = 0u; i < dim; i = i + 1u) {
+            let mo = 1u + i;
+            let ho = 1u + dim + i;
+            var a: f32 = 0.0;
+            var b: f32 = 0.0;
+            for (var g: u32 = lo; g < hi; g = g + 1u) {
+                let p = post[g - lo];
+                let b_off = g * w4;
+                let mi = packed[b_off + mo / 4u][mo % 4u];
+                let hv = packed[b_off + ho / 4u][ho % 4u];
+                a = a + p * mi;
+                b = b + p * (-2.0 * hv);
+            }
+            a_out[ab_base + i] = a;
+            b_out[ab_base + i] = b;
+        }
+        cnt_out[t] = count;
+        return;
+    }
+
+    for (var i: u32 = 0u; i < dim; i = i + 1u) {
+        a_out[ab_base + i] = 0.0;
+        b_out[ab_base + i] = 0.0;
+    }
     var mx: f32 = -3.4028235e38;
     for (var g: u32 = lo; g < hi; g = g + 1u) {
         mx = max(mx, score(g, f_off, w4));

@@ -162,9 +162,18 @@ All stages start from the same base: 16 kHz mono → 13-dim MFCC → per-speaker
 
 `FeatureStore` holds the base MFCC+CMVN for the whole corpus in RAM as f32 plus per-speaker
 CMVN stats and (once estimated) per-speaker fMLLR transforms, and derives the stage-specific
-features lazily via `FeatureKind::{Deltas, SpliceLda, SpliceLdaFmllr}`. Derived features are
-never held for the whole corpus: every pass walks `chunk::by_frames` groups of about
-1.2M frames and drops each group's view before the next, so peak memory is the base store
-plus one chunk (see [CLI.md](CLI.md#large-corpora)). The `.viter` model
+features lazily via `FeatureKind::{Deltas, SpliceLda, SpliceLdaFmllr}`. Passes walk
+`chunk::by_frames` groups of about 1.2M frames. Built-in training stages use
+`iterate::run_iterations_cached` to retain up to 2 GiB of derived chunks within a stage;
+cache hits borrow the arrays without copying. The cached prefix remains stable when
+the corpus exceeds the budget, and later chunks are derived and dropped as they stream.
+After an active MLLT or fMLLR hook finishes, the cache is cleared before accumulation
+derives features with the updated transforms. It is released at stage exit.
+
+The public `run_iterations` entry point remains uncached for custom hooks and feature
+callbacks, as do full-corpus alignment passes. Derived-feature memory is bounded by
+the cache budget plus the current chunk and its transform temporaries, in addition to
+the base store and other model/statistics allocations (see [CLI.md](CLI.md#large-corpora)).
+The `.viter` model
 records which pipeline it was trained with (`deltas`, `splice`, `lda`, `fmllr`) so
 `align_corpus` reconstructs it exactly.
