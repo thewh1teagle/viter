@@ -19,6 +19,11 @@ pub struct ServeArgs {
     /// Do not open a browser window
     #[arg(long)]
     pub no_open: bool,
+
+    /// Folder with the audio files when DIR holds only TextGrids (e.g. a training
+    /// output next to its corpus); matched by file name
+    #[arg(long, value_name = "DIR")]
+    pub audio: Option<PathBuf>,
 }
 
 pub fn run(args: ServeArgs) -> anyhow::Result<()> {
@@ -27,5 +32,6 @@ pub fn run(args: ServeArgs) -> anyhow::Result<()> {
         dir: args.dir,
         port: args.port,
         open: !args.no_open,
+        audio: args.audio,
     }))
 }

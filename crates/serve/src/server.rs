@@ -23,6 +23,8 @@ pub struct ServeOptions {
     pub port: u16,
     /// Open the URL in the default browser once the listener is bound.
     pub open: bool,
+    /// Folder to take audio from when TextGrids have no sibling audio (matched by stem).
+    pub audio: Option<PathBuf>,
 }
 
 impl Default for ServeOptions {
@@ -31,6 +33,7 @@ impl Default for ServeOptions {
             dir: PathBuf::from("."),
             port: 7878,
             open: true,
+            audio: None,
         }
     }
 }
@@ -48,8 +51,8 @@ pub async fn serve(opts: ServeOptions) -> anyhow::Result<()> {
         .with_context(|| format!("cannot open directory {}", opts.dir.display()))?;
     anyhow::ensure!(dir.is_dir(), "{} is not a directory", dir.display());
 
-    let state =
-        AppState::new(dir.clone()).with_context(|| format!("failed to scan {}", dir.display()))?;
+    let state = AppState::new(dir.clone(), opts.audio.clone())
+        .with_context(|| format!("failed to scan {}", dir.display()))?;
     let num_files = state.num_files();
 
     let app = router(state);

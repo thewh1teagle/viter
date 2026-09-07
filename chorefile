@@ -88,21 +88,10 @@ task inspect model=$model {
     cargo run --release -q -p viter-kaldi --example inspect -- $1
 }
 
-# Symlink the corpus wavs next to a TextGrid folder so `serve` can pair them: link-audio [textgrids].
-task link-audio tg=$train_tg {
-    for f in $(find $1 *.TextGrid) {
-        d=$(dirname $f)
-        b=$(basename $f .TextGrid)
-        rel=$(realpath --relative-to=$d $corpus/LJ/$b.wav)
-        exists $d/$b.wav || ln -s $rel $d/$b.wav
-    }
-}
-
-# Serve a training TextGrid folder next to its audio: serve [textgrids].
+# Serve a training TextGrid folder with audio taken from the corpus: serve [textgrids].
 task serve tg=$train_tg {
     exists target/release/viter || build
-    link-audio $1
-    target/release/viter serve $1
+    target/release/viter serve $1 --audio $corpus
 }
 
 # Serve viter vs MFA side by side (tiers: words, phones, mfa words, mfa phones).

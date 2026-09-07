@@ -43,6 +43,9 @@ struct Entry {
 #[derive(Clone)]
 pub struct AppState {
     root: PathBuf,
+    /// Optional folder to take audio from when a TextGrid has no sibling audio
+    /// (a training output directory next to its corpus). Matched by file stem.
+    audio_root: Option<PathBuf>,
     /// Cached directory scan, keyed by id. Rebuilt on demand when stale.
     index: Arc<Mutex<Index>>,
     /// Peaks cache keyed by `(id, px)`.
@@ -62,10 +65,11 @@ const RESCAN_AFTER: std::time::Duration = std::time::Duration::from_secs(2);
 
 impl AppState {
     /// Scan `root` once and build the initial index.
-    pub fn new(root: PathBuf) -> anyhow::Result<Self> {
-        let (entries, order) = scan_dir(&root)?;
+    pub fn new(root: PathBuf, audio_root: Option<PathBuf>) -> anyhow::Result<Self> {
+        let (entries, order) = scan_dir(&root, audio_root.as_deref())?;
         Ok(Self {
             root,
+            audio_root,
             index: Arc::new(Mutex::new(Index {
                 entries,
                 order,
@@ -87,7 +91,7 @@ impl AppState {
         if idx.scanned_at.elapsed() < RESCAN_AFTER {
             return;
         }
-        match scan_dir(&self.root) {
+        match scan_dir(&self.root, self.audio_root.as_deref()) {
             Ok((entries, order)) => {
                 idx.entries = entries;
                 idx.order = order;
@@ -117,17 +121,46 @@ impl AppState {
 /// An entry is produced for every audio file found; the TextGrid is attached when a sibling of
 /// the same stem exists, so freshly recorded audio still shows up in the viewer before it has
 /// been aligned.
-fn scan_dir(root: &Path) -> anyhow::Result<(HashMap<String, Entry>, Vec<String>)> {
+fn scan_dir(
+    root: &Path,
+    audio_root: Option<&Path>,
+) -> anyhow::Result<(HashMap<String, Entry>, Vec<String>)> {
     let mut audio: HashMap<String, PathBuf> = HashMap::new();
     let mut grids: HashMap<String, PathBuf> = HashMap::new();
     walk(root, root, &mut audio, &mut grids)?;
+
+    // TextGrids without sibling audio: look the audio up by stem in `audio_root`.
+    if let Some(aroot) = audio_root {
+        let mut ext_audio: HashMap<String, PathBuf> = HashMap::new();
+        let mut ext_grids: HashMap<String, PathBuf> = HashMap::new();
+        walk(aroot, aroot, &mut ext_audio, &mut ext_grids)?;
+        let by_stem: HashMap<String, PathBuf> = ext_audio
+            .into_values()
+            .filter_map(|p| Some((p.file_stem()?.to_string_lossy().into_owned(), p)))
+            .collect();
+        for (id, g) in &grids {
+            if audio.contains_key(id) {
+                continue;
+            }
+            let stem = g
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            if let Some(a) = by_stem.get(&stem) {
+                audio.insert(id.clone(), a.clone());
+            }
+        }
+    }
 
     let mut entries = HashMap::with_capacity(audio.len());
     for (id, audio_abs) in audio {
         let textgrid_abs = grids.get(&id).cloned();
         let duration = textgrid_abs.as_deref().and_then(textgrid_duration);
         let meta = FileEntry {
-            audio: rel_string(root, &audio_abs),
+            audio: audio_abs
+                .strip_prefix(root)
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| audio_abs.to_string_lossy().into_owned()),
             textgrid: textgrid_abs.as_deref().map(|p| rel_string(root, p)),
             duration,
             id: id.clone(),
