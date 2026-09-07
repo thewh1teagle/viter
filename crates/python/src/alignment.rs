@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use pyo3::prelude::*;
+use pyo3::types::PyDict;
 use viter_io::textgrid::{self, TextGrid};
 use viter_kaldi::types::{IntervalAlignment, SymbolTable};
 
@@ -75,6 +76,20 @@ impl Alignment {
     /// The TextGrid text, exactly as `to_textgrid` would write it.
     fn textgrid(&self) -> String {
         self.grid.to_string_long()
+    }
+
+    /// Plot the alignment over `audio`; see `viter.plot.plot`.
+    #[pyo3(signature = (audio, sample_rate = None, **kwargs))]
+    fn plot<'py>(
+        slf: &Bound<'py, Self>,
+        py: Python<'py>,
+        audio: &Bound<'py, PyAny>,
+        sample_rate: Option<&Bound<'py, PyAny>>,
+        kwargs: Option<&Bound<'py, PyDict>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let func = py.import("viter.plot")?.getattr("plot")?;
+        let args = (slf, audio, sample_rate);
+        func.call(args, kwargs)
     }
 
     fn __repr__(&self) -> String {

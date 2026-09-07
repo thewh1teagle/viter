@@ -18,6 +18,9 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
 ]
 
+[project.optional-dependencies]
+plot = ["matplotlib>=3.5"]
+
 [project.urls]
 Homepage = "https://github.com/thewh1teagle/viter"
 Repository = "https://github.com/thewh1teagle/viter"

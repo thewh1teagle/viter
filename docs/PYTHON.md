@@ -180,6 +180,32 @@ alignment.to_textgrid("out.TextGrid")   # write the long-format TextGrid
 text = alignment.textgrid()             # the same thing as a string
 ```
 
+## Plotting
+
+```
+uv pip install "viter[plot]"
+```
+
+```python
+alignment.plot(audio, sample_rate=None, *, ax=None, tiers=("words", "phones"),
+               spectrogram=True, zoom=None, n_mels=80, cmap="magma")
+viter.plot(alignment, audio, ...)   # the same function, as a module-level call
+```
+
+`audio` is either a wav path or the 1-D float array you aligned (then `sample_rate` is
+required). The top panel is a log-mel spectrogram (`spectrogram=False` draws the waveform
+instead), with one labelled strip per tier below it, all sharing one time axis;
+`zoom=(start, end)` limits the range in seconds. Returns the main axes.
+
+```python
+a = model.align("talk.wav", "hello world")
+a.plot("talk.wav", zoom=(0.0, 2.0))
+```
+
+It is plain matplotlib, so in a notebook the figure renders inline; outside one, call
+`matplotlib.pyplot.show()` or `savefig()` on the returned axes' figure. Importing `viter`
+without matplotlib installed is fine — the error only comes when you call `plot`.
+
 ## `import_mfa`
 
 ```python

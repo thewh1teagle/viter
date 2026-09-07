@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.9"
-# dependencies = ["viter", "numpy", "soundfile"]
+# dependencies = ["viter", "numpy", "soundfile", "matplotlib"]
 # ///
 """Align audio that is already in memory (a numpy array), no temp files.
 
@@ -25,3 +25,5 @@ a = model.align(np.asarray(samples), text, sample_rate=sr)
 print(f"{len(a.words)} words, {len(a.phones)} phones, {a.duration:.2f} s")
 for p in a.phones:
     print(f"{p.start:.3f} {p.end:.3f} {p.label}")
+
+a.plot(samples, sample_rate=sr)

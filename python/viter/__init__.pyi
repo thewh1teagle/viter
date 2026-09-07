@@ -45,6 +45,20 @@ class Alignment:
     def textgrid(self) -> str:
         """The TextGrid text, exactly as :meth:`to_textgrid` would write it."""
 
+    def plot(
+        self,
+        audio: AudioLike,
+        sample_rate: Optional[int] = None,
+        *,
+        ax: Any = None,
+        tiers: Sequence[str] = ("words", "phones"),
+        spectrogram: bool = True,
+        zoom: Optional[Tuple[float, float]] = None,
+        n_mels: int = 80,
+        cmap: str = "magma",
+    ) -> Any:
+        """Plot the alignment over its audio; returns the main matplotlib axes."""
+
 class AlignSummary:
     """What :meth:`Model.align_corpus` did."""
 
@@ -139,3 +153,17 @@ def serve(
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     """Run the ``viter`` CLI in-process and return its exit code."""
+
+def plot(
+    alignment: Alignment,
+    audio: AudioLike,
+    sample_rate: Optional[int] = None,
+    *,
+    ax: Any = None,
+    tiers: Sequence[str] = ("words", "phones"),
+    spectrogram: bool = True,
+    zoom: Optional[Tuple[float, float]] = None,
+    n_mels: int = 80,
+    cmap: str = "magma",
+) -> Any:
+    """Plot an alignment over its audio; needs ``viter[plot]``. Returns the main axes."""

@@ -17,6 +17,7 @@ from ._viter import (
     serve,
     train,
 )
+from .plot import plot
 
 __all__ = [
     "Alignment",
@@ -28,6 +29,7 @@ __all__ = [
     "__version__",
     "import_mfa",
     "main",
+    "plot",
     "serve",
     "train",
 ]
