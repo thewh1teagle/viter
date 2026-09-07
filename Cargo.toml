@@ -65,6 +65,7 @@ name = "viter"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "Rusty forced aligner. Train, align, serve. One binary."
 
 [dependencies]
