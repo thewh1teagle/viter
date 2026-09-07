@@ -124,11 +124,7 @@ impl Default for GraphOptions {
 
 /// `-log p`, with `p <= 0` mapping to infinity and `p == 1` to exactly zero.
 fn neg_log(p: f32) -> f32 {
-    if p <= 0.0 {
-        f32::INFINITY
-    } else {
-        -p.ln()
-    }
+    if p <= 0.0 { f32::INFINITY } else { -p.ln() }
 }
 
 /// Builder state: a chain of "positions", where every position is a set of alternative
@@ -161,14 +157,7 @@ impl<'a> Builder<'a> {
     /// they have to be, because an HMM's exit state is shared with whatever follows it, and in
     /// the reorder convention that exit state owns the last emitting state's self-loop and its
     /// outgoing arcs (which belong to the *next* phone) carry the rescaling.
-    fn emit_phone(
-        &mut self,
-        window: &[PhoneId],
-        from: u32,
-        to: u32,
-        word: WordId,
-        pron: u32,
-    ) {
+    fn emit_phone(&mut self, window: &[PhoneId], from: u32, to: u32, word: WordId, pron: u32) {
         let phone = window[self.ctx.p];
         let entry = self.topo.topology_for_phone(phone).to_vec();
         let num_states = entry.len();
@@ -209,7 +198,9 @@ impl<'a> Builder<'a> {
                 }
                 let (tid, log_prob) = if st.is_emitting() {
                     let pdf = pdfs[st.pdf_class as usize];
-                    let tstate = self.tm.tuple_to_transition_state(phone, hmm_state, pdf, pdf);
+                    let tstate = self
+                        .tm
+                        .tuple_to_transition_state(phone, hmm_state, pdf, pdf);
                     let tid = self.tm.pair_to_transition_id(tstate, trans_idx as u32);
                     (
                         tid,
@@ -380,7 +371,11 @@ pub fn build_graph(
                     cost: neg_log(1.0 - opts.initial_silence_prob),
                 },
             );
-            hubs.push(Hub { branch: Branch::Direct, state: direct, left: 0 });
+            hubs.push(Hub {
+                branch: Branch::Direct,
+                state: direct,
+                left: 0,
+            });
 
             let sil_in = b.graph.add_state();
             b.graph.add_arc(
@@ -400,9 +395,17 @@ pub fn build_graph(
             let sil_out = b.graph.add_state();
             let window = make_window(ctx, 0, opts.silence_phone, right);
             b.emit_phone(&window, sil_in, sil_out, NO_WORD, NO_PRON);
-            hubs.push(Hub { branch: Branch::Silence, state: sil_out, left: opts.silence_phone });
+            hubs.push(Hub {
+                branch: Branch::Silence,
+                state: sil_out,
+                left: opts.silence_phone,
+            });
         } else {
-            hubs.push(Hub { branch: Branch::Direct, state: start, left: 0 });
+            hubs.push(Hub {
+                branch: Branch::Direct,
+                state: start,
+                left: 0,
+            });
         }
     }
 
@@ -485,8 +488,7 @@ pub fn build_graph(
                     cur = vec![(exit, phone)];
                 } else {
                     // Last phone: one exit per right-context alternative.
-                    let exits: Vec<u32> =
-                        rights.iter().map(|_| b.graph.add_state()).collect();
+                    let exits: Vec<u32> = rights.iter().map(|_| b.graph.add_state()).collect();
                     for &(from, left) in &cur {
                         for (ri, &(_, right)) in rights.iter().enumerate() {
                             let window = make_window(ctx, left, phone, right);
@@ -532,8 +534,7 @@ pub fn build_graph(
                                 } else {
                                     *next_firsts.first().unwrap_or(&0)
                                 };
-                                let window =
-                                    make_window(ctx, phone, opts.silence_phone, right);
+                                let window = make_window(ctx, phone, opts.silence_phone, right);
                                 b.emit_phone(&window, sil_in, sil_out, NO_WORD, NO_PRON);
                                 next_hubs.push(Hub {
                                     branch: Branch::Silence,

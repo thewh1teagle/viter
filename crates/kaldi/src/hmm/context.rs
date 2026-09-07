@@ -37,7 +37,13 @@ impl ContextDependency {
     ) -> Self {
         let share_roots = vec![false; phone_sets.len()];
         let mut num_leaves = 0;
-        let map = get_stub_map(0, phone_sets, num_pdf_classes, &share_roots, &mut num_leaves);
+        let map = get_stub_map(
+            0,
+            phone_sets,
+            num_pdf_classes,
+            &share_roots,
+            &mut num_leaves,
+        );
         Self::new(1, 0, map)
     }
 
@@ -83,10 +89,8 @@ impl ContextDependency {
                 // Kaldi builds a 2-element event with only the central position and the
                 // pdf-class set, then sorts it; MultiMap explores every branch whose key is
                 // absent from the event.
-                let mut event: EventType = vec![
-                    (self.p as i32, phone as EventValue),
-                    (PDF_CLASS_KEY, pos),
-                ];
+                let mut event: EventType =
+                    vec![(self.p as i32, phone as EventValue), (PDF_CLASS_KEY, pos)];
                 event.sort_unstable();
                 let mut pdfs = Vec::new();
                 self.map.multi_map(&event, &mut pdfs);

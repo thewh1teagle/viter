@@ -9,10 +9,10 @@
 //! `plans/mfa/montreal_forced_aligner/dictionary/mixins.py:804`.
 
 use super::cluster::{ClusterKMeansOptions, cluster_kmeans};
-use super::stats::{BuildTreeStats, filter_stats_by_key, split_stats_by_key, sum_stats_vec};
-use super::tree_cluster::{TreeClusterOptions, tree_cluster};
 use super::clusterable::{GaussClusterable, ensure_not_null};
 use super::event_map::{EventKey, EventValue, K_PDF_CLASS};
+use super::stats::{BuildTreeStats, filter_stats_by_key, split_stats_by_key, sum_stats_vec};
+use super::tree_cluster::{TreeClusterOptions, tree_cluster};
 use crate::types::PhoneId;
 
 pub use super::cluster::RefineClustersOptions;
@@ -361,14 +361,14 @@ pub fn read_roots(text: &str) -> (Vec<Vec<PhoneId>>, Vec<bool>, Vec<bool>) {
 }
 
 /// Render roots back into Kaldi's `roots.int` text form.
-pub fn write_roots(
-    phone_sets: &[Vec<PhoneId>],
-    is_shared: &[bool],
-    is_split: &[bool],
-) -> String {
+pub fn write_roots(phone_sets: &[Vec<PhoneId>], is_shared: &[bool], is_split: &[bool]) -> String {
     let mut out = String::new();
     for i in 0..phone_sets.len() {
-        out.push_str(if is_shared[i] { "shared " } else { "not-shared " });
+        out.push_str(if is_shared[i] {
+            "shared "
+        } else {
+            "not-shared "
+        });
         out.push_str(if is_split[i] { "split" } else { "not-split" });
         for ph in &phone_sets[i] {
             out.push(' ');
@@ -492,15 +492,17 @@ mod tests {
     #[test]
     fn mfa_roots_default_shape() {
         let (sets, shared, split) = mfa_roots(&[vec![10, 11, 12, 13], vec![20, 21]], &[1, 2]);
-        assert_eq!(sets, vec![vec![1], vec![2], vec![10, 11, 12, 13], vec![20, 21]]);
+        assert_eq!(
+            sets,
+            vec![vec![1], vec![2], vec![10, 11, 12, 13], vec![20, 21]]
+        );
         assert_eq!(shared, vec![true, true, true, true]);
         assert_eq!(split, vec![true, true, true, true]);
     }
 
     #[test]
     fn mfa_roots_shared_silence() {
-        let (sets, shared, split) =
-            mfa_roots_with(&[vec![10, 11]], &[vec![1], vec![2, 3]], true);
+        let (sets, shared, split) = mfa_roots_with(&[vec![10, 11]], &[vec![1], vec![2, 3]], true);
         assert_eq!(sets, vec![vec![1, 2, 3], vec![10, 11]]);
         assert_eq!(shared, vec![false, true]);
         assert_eq!(split, vec![false, true]);
@@ -554,8 +556,7 @@ mod tests {
             phone_stat(3, 1, 20.0),
             phone_stat(4, 1, 20.3),
         ];
-        let sets =
-            kmeans_cluster_phones(&stats, &[vec![1], vec![2], vec![3], vec![4]], &[1], 1, 2);
+        let sets = kmeans_cluster_phones(&stats, &[vec![1], vec![2], vec![3], vec![4]], &[1], 1, 2);
         assert_eq!(sets.len(), 2);
         let total: usize = sets.iter().map(|s| s.len()).sum();
         assert_eq!(total, 4);

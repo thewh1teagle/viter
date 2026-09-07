@@ -8,10 +8,10 @@
 //! `min_gaussian_occupancy = 3.0`, and `num_iterations` regular iterations.
 
 use anyhow::{Result, anyhow};
+use rayon::prelude::*;
 use viter_kaldi::gmm::{AmDiagGmm, DiagGmm};
 use viter_kaldi::hmm::{ContextDependency, HmmTopology, TransitionModel};
 use viter_kaldi::types::{Feats, PhoneId};
-use rayon::prelude::*;
 
 use crate::config::{GaussianSchedule, MonoConfig, Stage};
 use crate::pipeline::{
@@ -27,15 +27,22 @@ pub fn run(ctx: &mut StageCtx<'_>, cfg: &MonoConfig) -> Result<StageOutput> {
     let utts = ctx.subset_for(Stage::Mono);
     ctx.progress.stage(
         "mono",
-        &format!("{} utterances, {} iterations", utts.len(), cfg.num_iterations),
+        &format!(
+            "{} utterances, {} iterations",
+            utts.len(),
+            cfg.num_iterations
+        ),
     );
 
     // Topology and monophone tree. Silence phones get `num_sil_states`, everything
     // else `num_nonsil_states` (`dictionary/mixins.py:669 _write_topo`).
     let all_phones: Vec<PhoneId> = ctx.corpus.phones.phone_ids().collect();
     let silence: Vec<PhoneId> = ctx.silence_phones.clone();
-    let nonsilence: Vec<PhoneId> =
-        all_phones.iter().copied().filter(|p| !silence.contains(p)).collect();
+    let nonsilence: Vec<PhoneId> = all_phones
+        .iter()
+        .copied()
+        .filter(|p| !silence.contains(p))
+        .collect();
 
     let topo = HmmTopology::mfa_default(
         &silence,
@@ -70,7 +77,14 @@ pub fn run(ctx: &mut StageCtx<'_>, cfg: &MonoConfig) -> Result<StageOutput> {
         "initialized monophone model"
     );
 
-    ctx.model = Some(ModelState { topo, ctx: ctx_dep, tm, am, lda: None, am_si: None });
+    ctx.model = Some(ModelState {
+        topo,
+        ctx: ctx_dep,
+        tm,
+        am,
+        lda: None,
+        am_si: None,
+    });
 
     // Stage features: cmvn'd MFCC + deltas, computed once and reused every iteration.
     let feats = ctx.feats.feats_for_many(&utts, FeatureKind::Deltas);
@@ -106,7 +120,9 @@ pub fn run(ctx: &mut StageCtx<'_>, cfg: &MonoConfig) -> Result<StageOutput> {
     }
 
     let started = std::time::Instant::now();
-    let bar = ctx.progress.bar("mono iter 0 · accumulate", utts.len() as u64);
+    let bar = ctx
+        .progress
+        .bar("mono iter 0 · accumulate", utts.len() as u64);
     let st = {
         let m = ctx.model();
         stats::accumulate(&m.am, &m.tm, &outcome.alignments, &feats, &bar)

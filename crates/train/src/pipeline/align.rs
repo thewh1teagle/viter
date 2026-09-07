@@ -7,12 +7,12 @@
 //! then undo the boost. Graphs are built once per stage (they only change when the
 //! tree changes) and reused across every iteration of that stage.
 
+use rayon::prelude::*;
 use viter_kaldi::align::{self, AlignOptions};
 use viter_kaldi::device::Device;
 use viter_kaldi::gmm::AmDiagGmm;
 use viter_kaldi::hmm::{self, ContextDependency, Graph, GraphOptions, TransitionModel};
 use viter_kaldi::types::{Alignment, Feats, PdfId};
-use rayon::prelude::*;
 
 use super::progress::Bar;
 
@@ -147,7 +147,11 @@ pub fn align_batch(
         t_vit += _t2.elapsed();
         alignments.extend(out);
     }
-    tracing::debug!(score_ms=t_score.as_millis(), viterbi_ms=t_vit.as_millis(), "align_batch phases");
+    tracing::debug!(
+        score_ms = t_score.as_millis(),
+        viterbi_ms = t_vit.as_millis(),
+        "align_batch phases"
+    );
 
     let failed = alignments.iter().filter(|a| a.is_none()).count();
     AlignOutcome { alignments, failed }
@@ -210,7 +214,10 @@ pub fn equal_align_all(
 /// iteration, which uses `initial_beam` (`monophone.py:232-238`).
 pub fn iteration_align_options(base: &AlignOptions, initial_beam: Option<f32>) -> AlignOptions {
     match initial_beam {
-        Some(beam) => AlignOptions { beam, ..base.clone() },
+        Some(beam) => AlignOptions {
+            beam,
+            ..base.clone()
+        },
         None => base.clone(),
     }
 }
@@ -221,13 +228,20 @@ mod tests {
 
     #[test]
     fn outcome_counts() {
-        let o = AlignOutcome { alignments: vec![None, None, None], failed: 2 };
+        let o = AlignOutcome {
+            alignments: vec![None, None, None],
+            failed: 2,
+        };
         assert_eq!(o.ok_count(), 1);
     }
 
     #[test]
     fn initial_beam_overrides_only_beam() {
-        let base = AlignOptions { beam: 10.0, retry_beam: 40.0, ..Default::default() };
+        let base = AlignOptions {
+            beam: 10.0,
+            retry_beam: 40.0,
+            ..Default::default()
+        };
         let first = iteration_align_options(&base, Some(6.0));
         assert_eq!(first.beam, 6.0);
         assert_eq!(first.retry_beam, 40.0);

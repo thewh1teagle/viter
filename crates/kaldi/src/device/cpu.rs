@@ -94,7 +94,14 @@ pub(crate) fn gemm_abt_raw(a: &[f32], m: usize, b: &[f32], n: usize, k: usize) -
     let a_ref: MatRef<'_, f32> = MatRef::from_row_major_slice(a, m, k);
     let b_ref: MatRef<'_, f32> = MatRef::from_row_major_slice(b, n, k);
     let c_mut: MatMut<'_, f32> = MatMut::from_row_major_slice_mut(&mut c, m, n);
-    matmul(c_mut, Accum::Replace, a_ref, b_ref.transpose(), 1.0f32, par());
+    matmul(
+        c_mut,
+        Accum::Replace,
+        a_ref,
+        b_ref.transpose(),
+        1.0f32,
+        par(),
+    );
     c
 }
 
@@ -139,8 +146,7 @@ pub(crate) fn segmented_logsumexp(
     let nseg = bounds.len();
     let mut out = vec![0.0f32; frames * nseg];
     if frames == 0 || nseg == 0 {
-        return Array2::from_shape_vec((frames, nseg), out)
-            .expect("shape matches allocation");
+        return Array2::from_shape_vec((frames, nseg), out).expect("shape matches allocation");
     }
 
     out.par_chunks_mut(nseg)
@@ -164,7 +170,11 @@ pub(crate) fn score_cpu(
 ) -> Array2<f32> {
     let frames = feats.nrows();
     let (gathered, width, bounds) = gather_pdfs(packed_rows, offsets, pdfs);
-    let total_gauss = if width == 0 { 0 } else { gathered.len() / width };
+    let total_gauss = if width == 0 {
+        0
+    } else {
+        gathered.len() / width
+    };
     if frames == 0 || pdfs.is_empty() {
         return Array2::zeros((frames, pdfs.len()));
     }
@@ -224,12 +234,7 @@ mod tests {
 
     #[test]
     fn gather_compacts_requested_pdfs_only() {
-        let rows = arr2(&[
-            [1.0f32, 0.0],
-            [2.0, 0.0],
-            [3.0, 0.0],
-            [4.0, 0.0],
-        ]);
+        let rows = arr2(&[[1.0f32, 0.0], [2.0, 0.0], [3.0, 0.0], [4.0, 0.0]]);
         let offsets = vec![0u32, 1, 3, 4];
         let (g, w, b) = gather_pdfs(&rows, &offsets, &[2, 0]);
         assert_eq!(w, 2);

@@ -9,20 +9,16 @@
 
 <p align="center">A forced aligner in one Rust binary. The Montreal Forced Aligner recipe, on your GPU.</p>
 
-|  | Montreal Forced Aligner | viter |
-|---|---|---|
-| Setup | conda, Kaldi, Python | one static binary |
-| LJSpeech (13,093 utts / 23.9 h), same box | 42 min | **4 min 36 s** |
-| Viewer | open Praat yourself | `viter serve` |
+viter trains an acoustic model on your corpus and aligns it to the phone, writing Praat TextGrids that drop straight into an MFA workflow. It is one static binary: no Python, no conda, no Kaldi, no CUDA toolkit. The GPU path is wgpu (Vulkan, Metal, DX12), and the CPU fallback always works.
 
-Measured on an NVIDIA DGX Spark, same corpus and dictionary for both. viter: 4 min 36 s wall clock, 6.7 GB peak RSS, GPU via wgpu Vulkan. MFA 3.x: 2,502 s. Aligning with a trained model runs at RTF ≈ 0.002, 24 hours of audio in about three minutes.
+## Install
+
+```
+cargo binstall viter        # prebuilt binary
+cargo install --path .      # or build from source
+```
 
 ## Quick start
-
-```
-cargo binstall viter      # prebuilt binary from the GitHub release
-cargo install --path .       # or build from source
-```
 
 ```
 viter train corpus/ --dict dict.txt -o model.viter
@@ -30,9 +26,7 @@ viter align corpus/ model.viter -o out/
 viter serve out/
 ```
 
-`serve` opens a local page: waveform on top, `words` and `phones` tiers below on the same time scale, click a phone to hear it, keyboard driven.
-
-A corpus is audio files with transcripts of the same stem next to them:
+A corpus is audio with transcripts of the same stem beside it:
 
 ```
 corpus/
@@ -43,30 +37,41 @@ corpus/
     utt2.txt
 ```
 
-`.wav`, `.flac`, `.mp3` pair with `.txt` or `.lab`. With a dictionary, transcripts are words. Without one, every whitespace token is a phoneme, so viter works for any language given phone-level transcripts.
+`.wav`, `.flac` and `.mp3` pair with `.txt` or `.lab`. Already have a Montreal Forced Aligner model? `viter import` brings it in.
 
-## Why
+## What you get
 
-MFA works, but it costs an environment to install and most of an hour to train, and the output is a folder of TextGrids you have to open somewhere else. viter is a single binary with no Python, no conda, no Kaldi, and no CUDA toolkit: the GPU path is wgpu (Vulkan / Metal / DX12), and the CPU fallback always works. Output is Praat TextGrids with `words` and `phones` tiers, MFA-compatible. On the full LJSpeech check the phone label sequences matched MFA's exactly on all 13,087 files.
+|  | Montreal Forced Aligner | viter |
+|---|---|---|
+| Setup | conda, Kaldi, Python | one static binary |
+| Train LJSpeech (13,093 utts, 23.9 h) | 42 min | **3 min** |
+| Peak memory | | 6.5 GB |
+| Align | | RTF 0.002 |
+
+- **MFA-compatible output.** Praat TextGrids with `words` and `phones` tiers. On the full LJSpeech run, phone labels are identical to MFA's on every file.
+- **A viewer in the binary.** `viter serve` opens a local page: waveform, tiers on the same time scale, click a phone to hear it, keyboard driven.
+- **Any language.** Use a pronunciation dictionary, or skip it and give phone strings directly, with `|` marking word boundaries.
+- **Runs you can watch.** Cargo-style progress with an overall ETA, and `--log FILE` when you want the detail on disk.
 
 ## How it works
 
-- **monophone**. Flat start from equal alignment, then Viterbi realignment with growing Gaussian counts.
-- **triphone**. Decision-tree state tying over phone context.
-- **LDA+MLLT**. Spliced features projected to 40 dimensions with maximum-likelihood linear transforms.
-- **SAT/fMLLR**. Speaker-adaptive training, plus a speaker-independent model for the first alignment pass.
+- **Monophone.** Flat start from equal alignment, then Viterbi realignment with growing Gaussian counts.
+- **Triphone.** Decision-tree state tying over phone context.
+- **LDA+MLLT.** Spliced features projected to 40 dimensions with maximum-likelihood linear transforms.
+- **SAT/fMLLR.** Speaker-adaptive training, plus a speaker-independent model for the first alignment pass.
 
-Kaldi-exact MFCC, diagonal-covariance GMMs, transition models, HMM topologies, the tree builder and the beam Viterbi decoder are ported from Kaldi's C++ rather than reinvented. Parity with MFA is the definition of done and is tracked in [docs/PARITY.md](docs/PARITY.md).
+Kaldi-exact MFCC, diagonal-covariance GMMs, transition models, HMM topologies, the tree builder and the beam Viterbi decoder are ported from Kaldi's C++ rather than reinvented. See [docs/TRAINING.md](docs/TRAINING.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Alignment quality is measured against MFA continuously: [docs/PARITY.md](docs/PARITY.md).
 
-## Status
+## Documentation
 
-Pre-alpha. The full recipe trains and aligns end to end and the viewer works. Still to come: pronunciation variants, silence and pronunciation probabilities, a word separator for phoneme mode, and GPU-side statistics accumulation. The CLI may still change.
-
-Prebuilt binaries for Linux x86_64/aarch64, macOS arm64/x86_64 and Windows x86_64 are built by `.github/workflows/release.yml`; releases coming.
-
-## Docs
-
-[docs/README.md](docs/README.md) is the index. Start with [CLI.md](docs/CLI.md), [CORPUS-FORMAT.md](docs/CORPUS-FORMAT.md) and [ARCHITECTURE.md](docs/ARCHITECTURE.md).
+| | |
+|---|---|
+| [CLI](docs/CLI.md) | Every flag for `train`, `align` and `serve`, with exit codes |
+| [Corpus format](docs/CORPUS-FORMAT.md) | Layout, dictionaries, phoneme-string mode, silence and OOV |
+| [Training](docs/TRAINING.md) | The recipe stage by stage, hyperparameters, the `.viter` file |
+| [Viewer](docs/VIEWER.md) | The `serve` app, its API and keyboard shortcuts |
+| [Parity](docs/PARITY.md) | How numeric agreement with MFA is verified |
+| [Development](docs/DEVELOPMENT.md) | Workspace layout, tests, working rules |
 
 ## License
 

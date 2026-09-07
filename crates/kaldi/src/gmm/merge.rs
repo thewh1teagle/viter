@@ -102,7 +102,8 @@ impl DiagGmm {
             let (w1, w2) = (self.weights[max_i], self.weights[max_j]);
             let w_sum = w1 + w2;
             for d in 0..dim {
-                means[[max_i, d]] = (means[[max_i, d]] + (w2 / w1) * means[[max_j, d]]) * (w1 / w_sum);
+                means[[max_i, d]] =
+                    (means[[max_i, d]] + (w2 / w1) * means[[max_j, d]]) * (w1 / w_sum);
                 vars[[max_i, d]] = (vars[[max_i, d]] + (w2 / w1) * vars[[max_j, d]]) * (w1 / w_sum);
             }
             self.weights[max_i] = w_sum;
@@ -184,7 +185,10 @@ impl DiagGmm {
             }
         }
         if (w0 - 1.0).abs() > 1e-6 * (1.0f32).max(w0.abs()) {
-            tracing::warn!(sum = w0, "DiagGmm::merge: weights do not sum to 1; rescaling");
+            tracing::warn!(
+                sum = w0,
+                "DiagGmm::merge: weights do not sum to 1; rescaling"
+            );
             for d in 0..dim {
                 mi0[d] *= w0;
                 iv0[d] *= w0;
@@ -204,7 +208,6 @@ impl DiagGmm {
         }
         self.compute_gconsts();
     }
-
 }
 
 /// Log-determinant of the Gaussian formed by merging two components
@@ -322,7 +325,11 @@ mod tests {
         let mut ms: Vec<f32> = (0..2).map(|i| g.component_mean(i)[0]).collect();
         ms.sort_by(|a, b| a.partial_cmp(b).unwrap());
         assert!(ms[0].abs() < 0.1, "fused component near 0, got {}", ms[0]);
-        assert!((ms[1] - 50.0).abs() < 0.1, "isolated component, got {}", ms[1]);
+        assert!(
+            (ms[1] - 50.0).abs() < 0.1,
+            "isolated component, got {}",
+            ms[1]
+        );
     }
 
     #[test]
@@ -332,5 +339,4 @@ mod tests {
         g.merge(2);
         assert_eq!(g.weights, w);
     }
-
 }

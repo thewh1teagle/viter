@@ -28,7 +28,12 @@ pub struct LdaEstimateOptions {
 
 impl Default for LdaEstimateOptions {
     fn default() -> Self {
-        Self { dim: 40, remove_offset: false, within_class_factor: 1.0, allow_large_dim: false }
+        Self {
+            dim: 40,
+            remove_offset: false,
+            within_class_factor: 1.0,
+            allow_large_dim: false,
+        }
     }
 }
 
@@ -246,9 +251,8 @@ impl LdaEstimate {
             }
         }
 
-        let mut m: Mat = ndarray::Array2::from_shape_fn((target_dim, dim), |(i, j)| {
-            lda_mat[i * dim + j] as f32
-        });
+        let mut m: Mat =
+            ndarray::Array2::from_shape_fn((target_dim, dim), |(i, j)| lda_mat[i * dim + j] as f32);
         let mut mfull: Mat =
             ndarray::Array2::from_shape_fn((dim, dim), |(i, j)| lda_mat[i * dim + j] as f32);
 
@@ -294,7 +298,11 @@ mod tests {
             est.accumulate(&[-5.0 + jitter, ((i % 11) as f32 - 5.0)], 0, 1.0);
             est.accumulate(&[5.0 + jitter, ((i % 13) as f32 - 6.0)], 1, 1.0);
         }
-        let opts = LdaEstimateOptions { dim: 1, allow_large_dim: false, ..Default::default() };
+        let opts = LdaEstimateOptions {
+            dim: 1,
+            allow_large_dim: false,
+            ..Default::default()
+        };
         let (m, mfull) = est.estimate(&opts);
         assert_eq!(m.shape(), &[1, 2]);
         assert_eq!(mfull.shape(), &[2, 2]);
@@ -313,7 +321,9 @@ mod tests {
         let mut est = LdaEstimate::new(3, 3);
         let mut seed = 12345u64;
         let mut next = || {
-            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             ((seed >> 33) as f64 / (1u64 << 31) as f64 - 0.5) as f32
         };
         let centers = [[0.0f32, 0.0, 0.0], [3.0, 1.0, 0.0], [0.0, 4.0, 2.0]];
@@ -327,7 +337,10 @@ mod tests {
                 est.accumulate(&x, c, 1.0);
             }
         }
-        let opts = LdaEstimateOptions { dim: 2, ..Default::default() };
+        let opts = LdaEstimateOptions {
+            dim: 2,
+            ..Default::default()
+        };
         let (m, _full) = est.estimate(&opts);
 
         let (total, between, _mean, _n) = est.get_stats();
@@ -360,7 +373,11 @@ mod tests {
             est.accumulate(&[10.0 + j, 20.0 - k], 0, 1.0);
             est.accumulate(&[14.0 + k, 24.0 - j], 1, 1.0);
         }
-        let opts = LdaEstimateOptions { dim: 1, remove_offset: true, ..Default::default() };
+        let opts = LdaEstimateOptions {
+            dim: 1,
+            remove_offset: true,
+            ..Default::default()
+        };
         let (m, mfull) = est.estimate(&opts);
         assert_eq!(m.shape(), &[1, 3]);
         assert_eq!(mfull.shape(), &[2, 3]);

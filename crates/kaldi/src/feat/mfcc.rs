@@ -107,13 +107,8 @@ impl MfccComputer {
         let mut dither_rng = DitherRng::new(0x5EED_0000_0000_0001);
 
         for r in 0..rows {
-            let raw_log_energy = self.extract_window(
-                &wave,
-                r,
-                &mut window,
-                need_raw_log_energy,
-                &mut dither_rng,
-            );
+            let raw_log_energy =
+                self.extract_window(&wave, r, &mut window, need_raw_log_energy, &mut dither_rng);
 
             // Zero the padding, then FFT in place (the FFT consumes its input).
             for v in window[frame_length..padded].iter_mut() {
@@ -305,9 +300,7 @@ mod tests {
 
     fn tone(n: usize, freq: f32) -> Vec<f32> {
         (0..n)
-            .map(|i| {
-                (2.0 * std::f32::consts::PI * freq * i as f32 / 16_000.0).sin() * 0.5
-            })
+            .map(|i| (2.0 * std::f32::consts::PI * freq * i as f32 / 16_000.0).sin() * 0.5)
             .collect()
     }
 
@@ -433,9 +426,7 @@ mod tests {
             .map(|i| {
                 harmonics
                     .iter()
-                    .map(|f| {
-                        (2.0 * std::f32::consts::PI * f * i as f32 / 16_000.0).sin() * 0.01
-                    })
+                    .map(|f| (2.0 * std::f32::consts::PI * f * i as f32 / 16_000.0).sin() * 0.01)
                     .sum()
             })
             .collect();
@@ -475,7 +466,11 @@ mod tests {
 
         for r in 0..expect_rows {
             for k in 0..13 {
-                assert!(f[[r, k]].is_finite(), "non-finite at ({r},{k}): {}", f[[r, k]]);
+                assert!(
+                    f[[r, k]].is_finite(),
+                    "non-finite at ({r},{k}): {}",
+                    f[[r, k]]
+                );
             }
             // C0 of a log-mel DCT is sqrt(1/N) * sum(log mel energies): finite and
             // well above the all-epsilon floor for a full-scale tone.
@@ -515,7 +510,9 @@ mod tests {
         let mut o = base;
         o.preemph = 0.0;
         let without = MfccComputer::new(o).compute(&tone(16_000, 440.0));
-        let diff: f32 = (0..13).map(|k| (with_pre[[50, k]] - without[[50, k]]).abs()).sum();
+        let diff: f32 = (0..13)
+            .map(|k| (with_pre[[50, k]] - without[[50, k]]).abs())
+            .sum();
         assert!(diff > 1e-2, "preemphasis had no effect: {diff}");
     }
 }

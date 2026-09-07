@@ -26,7 +26,11 @@ impl MlltAccs {
     pub fn new(dim: usize, rand_prune: f64) -> Self {
         assert!(dim > 0, "MLLT dim must be positive");
         assert!(rand_prune >= 0.0, "MLLT rand_prune must be non-negative");
-        Self { rand_prune, beta: 0.0, g: (0..dim).map(|_| SpMat::zeros(dim)).collect() }
+        Self {
+            rand_prune,
+            beta: 0.0,
+            g: (0..dim).map(|_| SpMat::zeros(dim)).collect(),
+        }
     }
 
     pub fn dim(&self) -> usize {
@@ -52,7 +56,11 @@ impl MlltAccs {
         let dim = x.len();
         assert_eq!(dim, gmm.dim(), "MLLT: data dim != gmm dim");
         assert_eq!(dim, self.dim(), "MLLT: data dim != accumulator dim");
-        assert_eq!(posteriors.len(), gmm.num_gauss(), "MLLT: posterior count mismatch");
+        assert_eq!(
+            posteriors.len(),
+            gmm.num_gauss(),
+            "MLLT: posterior count mismatch"
+        );
 
         let means_invvars = &gmm.means_invvars;
         let inv_vars = &gmm.inv_vars;
@@ -127,7 +135,11 @@ pub(crate) fn mllt_update(beta: f64, g: &[SpMat], mat: &mut Mat) -> (f64, f64) {
     let dim = g.len();
     assert!(dim != 0, "MLLT update: no stats");
     assert_eq!(mat.nrows(), dim, "MLLT update: M has wrong number of rows");
-    assert_eq!(mat.ncols(), dim, "MLLT update: M has wrong number of columns");
+    assert_eq!(
+        mat.ncols(),
+        dim,
+        "MLLT update: M has wrong number of columns"
+    );
 
     if beta < 10.0 * dim as f64 {
         if beta > 2.0 * dim as f64 {
@@ -163,10 +175,12 @@ pub(crate) fn mllt_update(beta: f64, g: &[SpMat], mat: &mut Mat) -> (f64, f64) {
             }
 
             row_buf.copy_from_slice(&m[i * dim..(i + 1) * dim]);
-            let dot_before: f64 =
-                row_buf.iter().zip(cofactor.iter()).map(|(a, b)| a * b).sum();
-            let objf_before =
-                beta * dot_before.abs().ln() - 0.5 * g[i].quad_form(&row_buf);
+            let dot_before: f64 = row_buf
+                .iter()
+                .zip(cofactor.iter())
+                .map(|(a, b)| a * b)
+                .sum();
+            let objf_before = beta * dot_before.abs().ln() - 0.5 * g[i].quad_form(&row_buf);
 
             // row = sqrt(beta / (c^T Ginv_i c)) * Ginv_i c
             ginv[i].mul_vec(&cofactor, &mut ginv_c);
@@ -177,13 +191,22 @@ pub(crate) fn mllt_update(beta: f64, g: &[SpMat], mat: &mut Mat) -> (f64, f64) {
             }
             m[i * dim..(i + 1) * dim].copy_from_slice(&row_buf);
 
-            let dot_after: f64 = row_buf.iter().zip(cofactor.iter()).map(|(a, b)| a * b).sum();
+            let dot_after: f64 = row_buf
+                .iter()
+                .zip(cofactor.iter())
+                .map(|(a, b)| a * b)
+                .sum();
             let objf_after = beta * dot_after.abs().ln() - 0.5 * g[i].quad_form(&row_buf);
             if objf_after < objf_before - objf_before.abs() * 0.00001 {
                 // CONTRACT-DEVIATION: Kaldi calls KALDI_ERR (fatal) here; we
                 // log an error and keep going, since the aligner must not abort
                 // a whole training run on one bad MLLT row.
-                tracing::error!(objf_before, objf_after, row = i, "objective decrease in MLLT update");
+                tracing::error!(
+                    objf_before,
+                    objf_after,
+                    row = i,
+                    "objective decrease in MLLT update"
+                );
             }
             tot_objf_impr += objf_after - objf_before;
         }
@@ -212,7 +235,10 @@ pub fn transform_means(am: &mut crate::gmm::AmDiagGmm, mat: &Mat) {
     let dim = am.dim();
     let rows = mat.nrows();
     let cols = mat.ncols();
-    assert_eq!(rows, dim, "transform_means: transform has wrong number of rows");
+    assert_eq!(
+        rows, dim,
+        "transform_means: transform has wrong number of rows"
+    );
     assert!(
         cols == dim || cols == dim + 1,
         "transform_means: transform must be [dim, dim] or [dim, dim+1]"
@@ -274,12 +300,18 @@ mod tests {
         let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(3);
         let mut post = Vec::new();
         for t in 0..60 {
-            let x: Vec<f32> = (0..dim).map(|d| ((t * 7 + d * 3) % 11) as f32 * 0.3).collect();
+            let x: Vec<f32> = (0..dim)
+                .map(|d| ((t * 7 + d * 3) % 11) as f32 * 0.3)
+                .collect();
             gmm.component_posteriors(&x, &mut post);
             accs.accumulate_from_posteriors(&gmm, &x, &post, &mut rng);
         }
         // posteriors sum to 1 per frame, so beta == num frames.
-        assert!((accs.count() - 60.0).abs() < 1e-3, "beta = {}", accs.count());
+        assert!(
+            (accs.count() - 60.0).abs() < 1e-3,
+            "beta = {}",
+            accs.count()
+        );
         // each G is PSD
         for j in 0..dim {
             let v: Vec<f64> = (0..dim).map(|k| (k as f64 + 1.0) * 0.3).collect();
@@ -295,8 +327,9 @@ mod tests {
         let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(11);
         let mut post = Vec::new();
         for t in 0..500 {
-            let x: Vec<f32> =
-                (0..dim).map(|d| (((t * 13 + d * 5) % 17) as f32 - 8.0) * 0.4).collect();
+            let x: Vec<f32> = (0..dim)
+                .map(|d| (((t * 13 + d * 5) % 17) as f32 - 8.0) * 0.4)
+                .collect();
             gmm.component_posteriors(&x, &mut post);
             accs.accumulate_from_posteriors(&gmm, &x, &post, &mut rng);
         }

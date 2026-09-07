@@ -186,8 +186,7 @@ fn delta_scales(o: &DeltaOptions) -> Vec<Vec<f32>> {
         for j in -window..=window {
             normalizer += (j * j) as f32;
             for k in -prev_offset..=prev_offset {
-                cur[(j + k + cur_offset) as usize] +=
-                    j as f32 * prev[(k + prev_offset) as usize];
+                cur[(j + k + cur_offset) as usize] += j as f32 * prev[(k + prev_offset) as usize];
             }
         }
         for v in cur.iter_mut() {
@@ -451,17 +450,20 @@ mod tests {
         let s = splice(&f, 1, 1);
         assert_eq!(s.shape(), &[4, 9]);
         // Frame 0: [frame0, frame0, frame1].
-        assert_eq!(s.row(0).to_vec(), vec![
-            1.0, 2.0, 3.0, 1.0, 2.0, 3.0, 2.0, 4.0, 6.0
-        ]);
+        assert_eq!(
+            s.row(0).to_vec(),
+            vec![1.0, 2.0, 3.0, 1.0, 2.0, 3.0, 2.0, 4.0, 6.0]
+        );
         // Frame 3 (last): [frame2, frame3, frame3].
-        assert_eq!(s.row(3).to_vec(), vec![
-            3.0, 6.0, 9.0, 4.0, 8.0, 12.0, 4.0, 8.0, 12.0
-        ]);
+        assert_eq!(
+            s.row(3).to_vec(),
+            vec![3.0, 6.0, 9.0, 4.0, 8.0, 12.0, 4.0, 8.0, 12.0]
+        );
         // Interior frame 1: [frame0, frame1, frame2].
-        assert_eq!(s.row(1).to_vec(), vec![
-            1.0, 2.0, 3.0, 2.0, 4.0, 6.0, 3.0, 6.0, 9.0
-        ]);
+        assert_eq!(
+            s.row(1).to_vec(),
+            vec![1.0, 2.0, 3.0, 2.0, 4.0, 6.0, 3.0, 6.0, 9.0]
+        );
     }
 
     #[test]

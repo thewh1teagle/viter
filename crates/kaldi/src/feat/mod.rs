@@ -17,10 +17,8 @@ mod transform;
 mod window;
 
 pub use mfcc::MfccComputer;
+pub use transform::{CmvnStats, DeltaOptions, add_deltas, apply_cmvn, apply_transform, splice};
 pub use window::{MfccOptions, WindowType, num_frames};
-pub use transform::{
-    CmvnStats, DeltaOptions, add_deltas, apply_cmvn, apply_transform, splice,
-};
 
 #[cfg(test)]
 mod tests {
@@ -32,9 +30,7 @@ mod tests {
         let opts = MfccOptions::default();
         let computer = MfccComputer::new(opts);
         let wave: Vec<f32> = (0..16_000)
-            .map(|i| {
-                (2.0 * std::f32::consts::PI * 220.0 * i as f32 / 16_000.0).sin() * 0.3
-            })
+            .map(|i| (2.0 * std::f32::consts::PI * 220.0 * i as f32 / 16_000.0).sin() * 0.3)
             .collect();
 
         let mut feats = computer.compute(&wave);
@@ -54,9 +50,7 @@ mod tests {
     fn lda_pipeline_yields_40_dims() {
         let computer = MfccComputer::new(MfccOptions::default());
         let wave: Vec<f32> = (0..16_000)
-            .map(|i| {
-                (2.0 * std::f32::consts::PI * 300.0 * i as f32 / 16_000.0).sin() * 0.3
-            })
+            .map(|i| (2.0 * std::f32::consts::PI * 300.0 * i as f32 / 16_000.0).sin() * 0.3)
             .collect();
 
         let mut feats = computer.compute(&wave);
@@ -68,9 +62,12 @@ mod tests {
         assert_eq!(spliced.shape(), &[100, 91]);
 
         // A stand-in LDA+MLLT matrix: [40, 91], no offset column.
-        let lda = ndarray::Array2::<f32>::from_shape_fn((40, 91), |(o, i)| {
-            if i == o { 1.0 } else { 0.0 }
-        });
+        let lda = ndarray::Array2::<f32>::from_shape_fn(
+            (40, 91),
+            |(o, i)| {
+                if i == o { 1.0 } else { 0.0 }
+            },
+        );
         let out = apply_transform(&spliced, &lda);
         assert_eq!(out.shape(), &[100, 40]);
         assert!(out.iter().all(|v| v.is_finite()));
@@ -79,7 +76,10 @@ mod tests {
     #[test]
     fn num_frames_agrees_with_the_computer() {
         let computer = MfccComputer::new(MfccOptions::default());
-        assert_eq!(computer.num_frames(16_000), num_frames(16_000, computer.opts()));
+        assert_eq!(
+            computer.num_frames(16_000),
+            num_frames(16_000, computer.opts())
+        );
         assert_eq!(computer.num_frames(16_000), 100);
         assert!((computer.frame_shift_s() - 0.01).abs() < 1e-7);
         assert_eq!(computer.dim(), 13);

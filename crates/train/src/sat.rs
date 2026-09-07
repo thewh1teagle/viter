@@ -9,16 +9,16 @@
 //! (`sat.py:313-376 create_align_model`, kalpy `gmm/train.py:161`).
 
 use anyhow::Result;
+use rayon::prelude::*;
 use viter_kaldi::gmm::AmDiagGmm;
 use viter_kaldi::hmm::TransitionModel;
 use viter_kaldi::transform::{FmllrDiagGmmAccs, Mat};
 use viter_kaldi::types::{Alignment, Feats};
-use rayon::prelude::*;
 
 use crate::config::{GaussianSchedule, SatConfig, Stage};
 use crate::pipeline::{
-    FeatureKind, GraphSet, IterationHooks, IterationPlan, StageCtx, StageOutput,
-    UpdateOptions, run_iterations, stats,
+    FeatureKind, GraphSet, IterationHooks, IterationPlan, StageCtx, StageOutput, UpdateOptions,
+    run_iterations, stats,
 };
 use crate::tri::{self, TreeSetup};
 
@@ -101,8 +101,9 @@ pub fn run(ctx: &mut StageCtx<'_>, cfg: &SatConfig) -> Result<StageOutput> {
     };
     let feats = ctx.feats.feats_for_many(&utts, current_kind(ctx));
 
-    let alignments =
-        run_iterations(ctx, &mut plan, &mut hooks, feats, &rebuild, &graphs, converted)?;
+    let alignments = run_iterations(
+        ctx, &mut plan, &mut hooks, feats, &rebuild, &graphs, converted,
+    )?;
 
     // Speaker-independent alignment model from two-feature statistics.
     build_align_model(ctx, cfg, &utts, &alignments, &mut plan)?;
@@ -238,16 +239,13 @@ pub fn estimate_fmllr(
                 accs
             };
             let chunk = (entries.len() / (rayon::current_num_threads() * 4)).max(8);
-            let accs = entries
-                .par_chunks(chunk)
-                .map(accumulate)
-                .reduce(
-                    || FmllrDiagGmmAccs::new(dim),
-                    |mut a, b| {
-                        a.add(&b);
-                        a
-                    },
-                );
+            let accs = entries.par_chunks(chunk).map(accumulate).reduce(
+                || FmllrDiagGmmAccs::new(dim),
+                |mut a, b| {
+                    a.add(&b);
+                    a
+                },
+            );
             bar.inc(1);
             if accs.count() < cfg.fmllr.min_count {
                 // Too little data to adapt this speaker reliably.
@@ -263,7 +261,11 @@ pub fn estimate_fmllr(
     bar.finish();
 
     let adapted = transforms.iter().filter(|t| t.is_some()).count();
-    tracing::info!(speakers = num_speakers, adapted, "estimated fMLLR transforms");
+    tracing::info!(
+        speakers = num_speakers,
+        adapted,
+        "estimated fMLLR transforms"
+    );
     Ok(transforms)
 }
 
@@ -286,15 +288,7 @@ impl IterationHooks for FmllrHooks {
         }
         let transforms = {
             let m = ctx.model();
-            estimate_fmllr(
-                ctx,
-                &m.tm,
-                &m.am,
-                utts,
-                alignments,
-                feats,
-                &self.cfg,
-            )?
+            estimate_fmllr(ctx, &m.tm, &m.am, utts, alignments, feats, &self.cfg)?
         };
         for (spk, t) in transforms.into_iter().enumerate() {
             if let Some(mat) = t {
@@ -323,7 +317,8 @@ fn build_align_model(
         // Nothing was adapted, so the SAT model is already speaker independent.
         return Ok(());
     }
-    ctx.progress.stage("sat", "building speaker-independent alignment model");
+    ctx.progress
+        .stage("sat", "building speaker-independent alignment model");
 
     let adapted = ctx.feats.feats_for_many(utts, current_kind(ctx));
     let unadapted = match ctx.model().lda.as_ref() {

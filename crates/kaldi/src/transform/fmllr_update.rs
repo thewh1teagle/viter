@@ -42,8 +42,10 @@ pub fn fmllr_aux_func_diag_gmm(xform: &Mat, stats: &FmllrDiagGmmAccs) -> f64 {
     let mut stats_c = stats.clone();
     stats_c.commit_single_frame_stats();
     let stats = &stats_c;
-    let flat: Vec<f64> =
-        (0..dim).flat_map(|i| (0..=dim).map(move |j| (i, j))).map(|(i, j)| xform[[i, j]] as f64).collect();
+    let flat: Vec<f64> = (0..dim)
+        .flat_map(|i| (0..=dim).map(move |j| (i, j)))
+        .map(|(i, j)| xform[[i, j]] as f64)
+        .collect();
     fmllr_aux_func(&flat, stats)
 }
 
@@ -79,8 +81,16 @@ pub(super) fn fmllr_inner_update(
     inv_g.mul_vec(&cofact_row, &mut cofact_row_invg);
 
     // Quadratic for the step size.
-    let e1: f64 = cofact_row_invg.iter().zip(cofact_row.iter()).map(|(a, b)| a * b).sum();
-    let e2: f64 = cofact_row_invg.iter().zip(k_row.iter()).map(|(a, b)| a * b).sum();
+    let e1: f64 = cofact_row_invg
+        .iter()
+        .zip(cofact_row.iter())
+        .map(|(a, b)| a * b)
+        .sum();
+    let e2: f64 = cofact_row_invg
+        .iter()
+        .zip(k_row.iter())
+        .map(|(a, b)| a * b)
+        .sum();
     let discr = (e2 * e2 + 4.0 * e1 * beta).sqrt();
     let alpha1 = (-e2 + discr) / (2.0 * e1);
     let alpha2 = (-e2 - discr) / (2.0 * e1);
@@ -106,8 +116,10 @@ pub(super) fn compute_fmllr_matrix_full(
     let dim = stats.dim;
     let inv_g: Vec<SpMat> = stats.g.iter().map(|s| s.inverted()).collect();
 
-    let old_xform: Vec<f64> =
-        (0..dim).flat_map(|i| (0..=dim).map(move |j| (i, j))).map(|(i, j)| in_xform[[i, j]] as f64).collect();
+    let old_xform: Vec<f64> = (0..dim)
+        .flat_map(|i| (0..=dim).map(move |j| (i, j)))
+        .map(|(i, j)| in_xform[[i, j]] as f64)
+        .collect();
     let mut new_xform = old_xform.clone();
     let old_objf = fmllr_aux_func(&old_xform, stats);
 
@@ -140,11 +152,16 @@ pub(super) fn compute_fmllr_matrix_full(
 /// For each row `i`, with `s` the scale and `o` the offset, the auxf reduces
 /// to `a s^2 + b s + beta = 0` after eliminating `o`; take the root that keeps
 /// `s > 0` (`a` is negative, so the negative branch of the quadratic formula).
-pub(super) fn compute_fmllr_matrix_diagonal(in_xform: &Mat, stats: &FmllrDiagGmmAccs) -> (Mat, f64) {
+pub(super) fn compute_fmllr_matrix_diagonal(
+    in_xform: &Mat,
+    stats: &FmllrDiagGmmAccs,
+) -> (Mat, f64) {
     let dim = stats.dim;
     let beta = stats.beta;
-    let mut out: Vec<f64> =
-        (0..dim).flat_map(|i| (0..=dim).map(move |j| (i, j))).map(|(i, j)| in_xform[[i, j]] as f64).collect();
+    let mut out: Vec<f64> = (0..dim)
+        .flat_map(|i| (0..=dim).map(move |j| (i, j)))
+        .map(|(i, j)| in_xform[[i, j]] as f64)
+        .collect();
     if beta == 0.0 {
         tracing::warn!("computing diagonal fMLLR matrix: no stats [using original transform]");
         return (in_xform.clone(), 0.0);
@@ -193,8 +210,10 @@ pub(super) fn compute_fmllr_matrix_offset(in_xform: &Mat, stats: &FmllrDiagGmmAc
             );
         }
     }
-    let mut out: Vec<f64> =
-        (0..dim).flat_map(|i| (0..=dim).map(move |j| (i, j))).map(|(i, j)| in_xform[[i, j]] as f64).collect();
+    let mut out: Vec<f64> = (0..dim)
+        .flat_map(|i| (0..=dim).map(move |j| (i, j)))
+        .map(|(i, j)| in_xform[[i, j]] as f64)
+        .collect();
     let mut objf_impr = 0.0f64;
     for i in 0..dim {
         // auxf(b_i) = -0.5 b_i^2 G_i(dim,dim) - b_i G_i(i,dim) + b_i K(i,dim)
@@ -207,7 +226,11 @@ pub(super) fn compute_fmllr_matrix_offset(in_xform: &Mat, stats: &FmllrDiagGmmAc
         out[i * (dim + 1) + dim] = b_i;
         let objf_after = -0.5 * b_i * b_i * g_dd - b_i * g_id + b_i * k_id;
         if objf_after < objf_before {
-            tracing::warn!(objf_before, objf_after, "objf decrease in fMLLR offset estimation");
+            tracing::warn!(
+                objf_before,
+                objf_after,
+                "objf decrease in fMLLR offset estimation"
+            );
         }
         objf_impr += objf_after - objf_before;
     }

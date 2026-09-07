@@ -385,8 +385,7 @@ impl MelBanks {
                     last_index = i;
                 }
             }
-            let first_index =
-                first_index.expect("empty mel bin; --num-mel-bins may be too large");
+            let first_index = first_index.expect("empty mel bin; --num-mel-bins may be too large");
             assert!(last_index >= first_index);
             bins.push((first_index, weights[first_index..=last_index].to_vec()));
         }
@@ -603,5 +602,4 @@ mod tests {
             assert!((hi - 7800.0).abs() < 1e-1, "{factor}: {hi}");
         }
     }
-
 }

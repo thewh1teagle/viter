@@ -217,7 +217,13 @@ impl AccumDiagGmm {
 
     /// Add stats for a single component directly (`AddStatsForComponent`).
     /// Used by the tree-stats path, which already has pooled `x`/`x^2` sums.
-    pub fn add_stats_for_component(&mut self, g: usize, occ: f64, x_stats: &[f64], x2_stats: &[f64]) {
+    pub fn add_stats_for_component(
+        &mut self,
+        g: usize,
+        occ: f64,
+        x_stats: &[f64],
+        x2_stats: &[f64],
+    ) {
         assert!(g < self.num_gauss(), "component index out of range");
         self.occupancy[g] += occ;
         if self.flags.contains(GmmFlags::MEANS) {
@@ -281,7 +287,11 @@ impl AccumDiagGmm {
             self.num_gauss(),
             "smooth_with_model: component count mismatch"
         );
-        assert_eq!(gmm.dim(), self.dim(), "smooth_with_model: dimension mismatch");
+        assert_eq!(
+            gmm.dim(),
+            self.dim(),
+            "smooth_with_model: dimension mismatch"
+        );
         let means = gmm.means();
         let vars = gmm.vars();
         for g in 0..self.num_gauss() {
@@ -362,8 +372,7 @@ impl AccumAmDiagGmm {
             (pdf as usize) < self.accs.len(),
             "AccumAmDiagGmm::accumulate_for_gmm: pdf out of range"
         );
-        let log_like =
-            self.accs[pdf as usize].accumulate_from_diag(am.pdf(pdf), x, weight);
+        let log_like = self.accs[pdf as usize].accumulate_from_diag(am.pdf(pdf), x, weight);
         self.total_loglike += log_like as f64 * weight as f64;
         self.total_frames += weight as f64;
         log_like
@@ -447,7 +456,10 @@ mod tests {
 
     fn gmm() -> DiagGmm {
         let mut g = DiagGmm::new(2, 2);
-        g.set_means_and_vars(&array![[0.0f32, 0.0], [4.0, 4.0]], &array![[1.0f32, 1.0], [1.0, 1.0]]);
+        g.set_means_and_vars(
+            &array![[0.0f32, 0.0], [4.0, 4.0]],
+            &array![[1.0f32, 1.0], [1.0, 1.0]],
+        );
         g.weights = vec![0.5, 0.5];
         g.compute_gconsts();
         g
@@ -539,7 +551,10 @@ mod tests {
             let mean = acc.mean_accum[[c, 0]] / acc.occupancy[c];
             let var = acc.var_accum[[c, 0]] / acc.occupancy[c] - mean * mean;
             let want_mean = g.means()[[c, 0]] as f64;
-            assert!((mean - want_mean).abs() < 1e-5, "mean {mean} vs {want_mean}");
+            assert!(
+                (mean - want_mean).abs() < 1e-5,
+                "mean {mean} vs {want_mean}"
+            );
             assert!((var - 1.0).abs() < 1e-4, "var {var}");
         }
     }

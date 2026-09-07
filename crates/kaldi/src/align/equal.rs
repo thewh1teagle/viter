@@ -4,7 +4,7 @@
 //! A path is drawn at random from the graph, ignoring self-loops; then self-loops are inserted
 //! along it, spread as evenly as possible, until the path has exactly `num_frames` emitting arcs.
 
-use crate::hmm::{Graph, TransitionModel, NO_WORD};
+use crate::hmm::{Graph, NO_WORD, TransitionModel};
 use crate::types::{Alignment, TransitionId, WordId};
 use rand::{Rng, RngExt};
 
@@ -168,7 +168,10 @@ pub fn equal_align(
         );
         return None;
     }
-    debug_assert!(tids.iter().all(|&t| (t as usize) <= tm.num_transition_ids()));
+    debug_assert!(
+        tids.iter()
+            .all(|&t| (t as usize) <= tm.num_transition_ids())
+    );
 
     Some(Alignment {
         utt: String::new(),
@@ -183,17 +186,17 @@ pub fn equal_align(
 #[cfg(test)]
 mod tests {
 
-/// `build_graph` input for words with a single plain pronunciation each.
-use crate::types::{PhoneId, Pronunciation};
+    /// `build_graph` input for words with a single plain pronunciation each.
+    use crate::types::{PhoneId, Pronunciation};
 
-fn plain(words: &[&[PhoneId]]) -> Vec<Vec<Pronunciation>> {
-    words
-        .iter()
-        .map(|p| vec![Pronunciation::plain(p.to_vec())])
-        .collect()
-}
+    fn plain(words: &[&[PhoneId]]) -> Vec<Vec<Pronunciation>> {
+        words
+            .iter()
+            .map(|p| vec![Pronunciation::plain(p.to_vec())])
+            .collect()
+    }
     use super::*;
-    use crate::hmm::{build_graph, ContextDependency, GraphOptions, HmmTopology};
+    use crate::hmm::{ContextDependency, GraphOptions, HmmTopology, build_graph};
     use rand::SeedableRng;
     use rand_xoshiro::Xoshiro256PlusPlus;
 

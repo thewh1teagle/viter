@@ -34,7 +34,10 @@ pub(crate) fn find_transcript(audio: &Path) -> Result<Option<String>> {
 
 /// `x.wav` + "txt" -> [`x.txt`, `x.TXT`, `x.TextGrid`-style casings].
 fn ext_candidates(audio: &Path, ext: &str) -> Vec<PathBuf> {
-    let mut v = vec![audio.with_extension(ext), audio.with_extension(ext.to_uppercase())];
+    let mut v = vec![
+        audio.with_extension(ext),
+        audio.with_extension(ext.to_uppercase()),
+    ];
     if ext == "textgrid" {
         v.push(audio.with_extension("TextGrid"));
         v.push(audio.with_extension("Textgrid"));
@@ -75,11 +78,7 @@ pub(crate) fn utt_id(root: &Path, audio: &Path) -> String {
     let rel = audio.strip_prefix(root).unwrap_or(audio);
     let stem = rel.with_extension("");
     let s = stem.to_string_lossy().replace('\\', "/");
-    if s.is_empty() {
-        "utt".to_string()
-    } else {
-        s
-    }
+    if s.is_empty() { "utt".to_string() } else { s }
 }
 
 pub(crate) fn speaker_name(root: &Path, audio: &Path, source: &SpeakerSource) -> String {

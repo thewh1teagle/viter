@@ -110,7 +110,11 @@ impl HmmTopology {
     /// All covered phones, sorted and unique. Kaldi keeps `phones_` sorted, and iteration order
     /// over it feeds `ComputeTuples`, so the sort matters for transition-id parity.
     pub fn phones(&self) -> Vec<PhoneId> {
-        let mut v: Vec<PhoneId> = self.entries.iter().flat_map(|e| e.phones.iter().copied()).collect();
+        let mut v: Vec<PhoneId> = self
+            .entries
+            .iter()
+            .flat_map(|e| e.phones.iter().copied())
+            .collect();
         v.sort_unstable();
         v.dedup();
         v

@@ -4,12 +4,12 @@
 //! and its dictionary parsing (`plans/mfa/montreal_forced_aligner/dictionary`).
 
 use anyhow::{Context, Result, anyhow, bail};
-use viter_kaldi::types::{
-    POS_BEGIN, POS_END, POS_INTERNAL, POS_SINGLETON, PhoneId, Pronunciation, SymbolTable, Utterance,
-    untag_phone,
-};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use viter_kaldi::types::{
+    POS_BEGIN, POS_END, POS_INTERNAL, POS_SINGLETON, PhoneId, Pronunciation, SymbolTable,
+    Utterance, untag_phone,
+};
 use walkdir::WalkDir;
 
 /// Audio extensions recognised while scanning a corpus.
@@ -29,8 +29,8 @@ const CLITIC_MARKERS: &str = "'’‘";
 
 pub use crate::dict::{DictEntry, Dictionary};
 
-use crate::files::{find_transcript, has_ext, read_transcript, speaker_name, utt_id};
 pub(crate) use crate::files::read_text_file;
+use crate::files::{find_transcript, has_ext, read_transcript, speaker_name, utt_id};
 
 /// Normalize a dictionary headword: strip `(2)` variant suffix, then normalize like a
 /// transcript word so lookups line up.
@@ -571,7 +571,10 @@ mod tests {
             vec![vec!["HH", "AH"], vec!["L", "OW"], vec!["B"]]
         );
         // No separator at all: every token is its own word.
-        assert_eq!(split_phone_words("HH AH L"), vec![vec!["HH"], vec!["AH"], vec!["L"]]);
+        assert_eq!(
+            split_phone_words("HH AH L"),
+            vec![vec!["HH"], vec!["AH"], vec!["L"]]
+        );
     }
 
     #[test]
@@ -620,5 +623,4 @@ mod tests {
         assert_eq!(untag("AH_B"), "AH");
         assert_eq!(untag("sil"), "sil");
     }
-
 }

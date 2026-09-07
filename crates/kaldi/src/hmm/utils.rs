@@ -5,8 +5,7 @@
 use super::context::ContextDependency;
 use super::transition::TransitionModel;
 use crate::types::{
-    Alignment, IntervalAlignment, PhoneId, PhoneInterval, Pronunciation, TransitionId,
-    WordInterval,
+    Alignment, IntervalAlignment, PhoneId, PhoneInterval, Pronunciation, TransitionId, WordInterval,
 };
 
 /// Kaldi `IsReordered` (hmm-utils.cc). Determines from the alignment itself whether self-loops
@@ -18,7 +17,10 @@ pub fn is_reordered(tm: &TransitionModel, alignment: &[TransitionId]) -> bool {
         if ts1 != ts2 {
             let loop1 = tm.is_self_loop(w[0]);
             let loop2 = tm.is_self_loop(w[1]);
-            debug_assert!(!(loop1 && loop2), "invalid alignment: two adjacent self-loops");
+            debug_assert!(
+                !(loop1 && loop2),
+                "invalid alignment: two adjacent self-loops"
+            );
             if loop1 {
                 return true; // reordered: self-loop last
             }
@@ -103,9 +105,7 @@ pub fn split_to_phones_checked(
         let tstate = tm.transition_id_to_transition_state(tids[cur]);
         let phone = tm.transition_state_to_phone(tstate);
         let first_class = tm.topology().topology_for_phone(phone)[0].pdf_class;
-        if first_class != super::topology::NO_PDF
-            && tm.transition_state_to_hmm_state(tstate) != 0
-        {
+        if first_class != super::topology::NO_PDF && tm.transition_state_to_hmm_state(tstate) != 0 {
             was_ok = false;
         }
         out.push(tids[cur..end].to_vec());
@@ -289,7 +289,11 @@ pub fn to_intervals(
     let mut pi = 0usize;
     for (wk, &w) in ali.words.iter().enumerate() {
         let pron_idx = ali.prons.get(wk).copied().unwrap_or(0);
-        let pron_idx = if pron_idx == super::NO_PRON { 0 } else { pron_idx };
+        let pron_idx = if pron_idx == super::NO_PRON {
+            0
+        } else {
+            pron_idx
+        };
         let Some(alts) = words_prons.get(w as usize) else {
             continue;
         };
@@ -301,10 +305,7 @@ pub fn to_intervals(
             continue;
         };
         // Skip runs that do not start this word (inserted optional silence).
-        while pi < phones.len()
-            && !expected.is_empty()
-            && phones[pi].phone != expected[0]
-        {
+        while pi < phones.len() && !expected.is_empty() && phones[pi].phone != expected[0] {
             pi += 1;
         }
         if pi >= phones.len() {
@@ -333,13 +334,13 @@ pub fn to_intervals(
 #[cfg(test)]
 mod tests {
 
-/// `build_graph` input for words with a single plain pronunciation each.
-fn plain(words: &[&[PhoneId]]) -> Vec<Vec<Pronunciation>> {
-    words
-        .iter()
-        .map(|p| vec![Pronunciation::plain(p.to_vec())])
-        .collect()
-}
+    /// `build_graph` input for words with a single plain pronunciation each.
+    fn plain(words: &[&[PhoneId]]) -> Vec<Vec<Pronunciation>> {
+        words
+            .iter()
+            .map(|p| vec![Pronunciation::plain(p.to_vec())])
+            .collect()
+    }
     use super::*;
     use crate::hmm::context::ContextDependency;
     use crate::hmm::topology::HmmTopology;
@@ -364,9 +365,7 @@ fn plain(words: &[&[PhoneId]]) -> Vec<Vec<Pronunciation>> {
                 .position(|t| t.phone == phone && t.hmm_state == hmm_state)
                 .unwrap() as u32
                 + 1;
-            let fwd = tm
-                .topology()
-                .topology_for_phone(phone)[hmm_state]
+            let fwd = tm.topology().topology_for_phone(phone)[hmm_state]
                 .transitions
                 .iter()
                 .position(|&(d, _)| d != hmm_state)

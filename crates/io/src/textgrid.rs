@@ -6,8 +6,8 @@
 //! short text formats are read, in UTF-8 or UTF-16 (BOM sniffed via `encoding_rs`).
 
 use anyhow::{Context, Result, anyhow, bail};
-use viter_kaldi::types::{IntervalAlignment, SymbolTable, untag_phone};
 use std::path::Path;
+use viter_kaldi::types::{IntervalAlignment, SymbolTable, untag_phone};
 
 /// One labelled interval.
 #[derive(Clone, Debug, PartialEq)]
@@ -147,7 +147,11 @@ fn num_to_str(x: f64) -> String {
         // "%d" % x truncates toward zero in Python; for values isclose to an integer,
         // truncation and rounding agree except for the -0.0 sign, which Praat writes as 0.
         let i = x as i64;
-        if i == 0 { "0".to_string() } else { i.to_string() }
+        if i == 0 {
+            "0".to_string()
+        } else {
+            i.to_string()
+        }
     } else {
         format_repr(x)
     }
@@ -230,7 +234,10 @@ fn parse_num(v: &str) -> Result<f64> {
 
 fn unquote(v: &str) -> String {
     let t = v.trim();
-    let inner = t.strip_prefix('"').and_then(|s| s.strip_suffix('"')).unwrap_or(t);
+    let inner = t
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .unwrap_or(t);
     inner.replace("\"\"", "\"").trim().to_string()
 }
 
@@ -269,7 +276,8 @@ fn parse_long_tier(block: &[&str]) -> Result<Option<IntervalTier>> {
     let name = field_after(block, 0, "name")
         .map(|(_, v)| unquote(v))
         .unwrap_or_default();
-    let (xmin_i, xmin) = field_after(block, 0, "xmin").ok_or_else(|| anyhow!("tier missing xmin"))?;
+    let (xmin_i, xmin) =
+        field_after(block, 0, "xmin").ok_or_else(|| anyhow!("tier missing xmin"))?;
     let xmin = parse_num(xmin)?;
     let (xmax_i, xmax) =
         field_after(block, xmin_i, "xmax").ok_or_else(|| anyhow!("tier missing xmax"))?;
@@ -282,8 +290,8 @@ fn parse_long_tier(block: &[&str]) -> Result<Option<IntervalTier>> {
             i += 1;
             continue;
         }
-        let (a, s) = field_after(block, i + 1, "xmin")
-            .ok_or_else(|| anyhow!("interval missing xmin"))?;
+        let (a, s) =
+            field_after(block, i + 1, "xmin").ok_or_else(|| anyhow!("interval missing xmin"))?;
         let (b, e) =
             field_after(block, a + 1, "xmax").ok_or_else(|| anyhow!("interval missing xmax"))?;
         let (c, txt) = read_text_field(block, b + 1)?;

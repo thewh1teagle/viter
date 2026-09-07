@@ -182,7 +182,6 @@ fn is_prob_field(f: &str) -> bool {
     }
 }
 
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -254,8 +253,11 @@ mod tests {
         let d = tmpdir("dict4");
         let p = d.join("d.txt");
         // The real shape of data/dict/ljspeech_ipa.dict.
-        std::fs::write(&p, "a\u{26a}\t0.99\t0.08\t1.64\t0.79\ta\u{26a}\n<unk>\t0.99\t0.22\t1.0\t1.0\tspn\n")
-            .unwrap();
+        std::fs::write(
+            &p,
+            "a\u{26a}\t0.99\t0.08\t1.64\t0.79\ta\u{26a}\n<unk>\t0.99\t0.22\t1.0\t1.0\tspn\n",
+        )
+        .unwrap();
         let dict = Dictionary::load(&p).unwrap();
         let e = &dict.lookup("a\u{26a}").unwrap()[0];
         assert_eq!(e.phones, ["a\u{26a}"]);
@@ -266,6 +268,4 @@ mod tests {
         assert_eq!(dict.lookup("<unk>").unwrap()[0].phones, ["spn"]);
         std::fs::remove_dir_all(&d).ok();
     }
-
 }
-

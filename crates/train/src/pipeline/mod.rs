@@ -12,6 +12,12 @@ pub mod progress;
 pub mod stats;
 
 use anyhow::{Context, Result, anyhow};
+use rand::SeedableRng;
+use rand_xoshiro::Xoshiro256PlusPlus;
+use rayon::prelude::*;
+use std::path::Path;
+use std::time::Instant;
+use viter_io::corpus::Corpus;
 use viter_kaldi::align::AlignOptions;
 use viter_kaldi::device::Device;
 use viter_kaldi::gmm::AmDiagGmm;
@@ -19,12 +25,6 @@ use viter_kaldi::hmm::{self, ContextDependency, HmmTopology, TransitionModel};
 use viter_kaldi::model::AcousticModel;
 use viter_kaldi::transform::Mat;
 use viter_kaldi::types::{Alignment, Feats, IntervalAlignment, PdfId, PhoneId, Pronunciation};
-use viter_io::corpus::Corpus;
-use rand::SeedableRng;
-use rand_xoshiro::Xoshiro256PlusPlus;
-use rayon::prelude::*;
-use std::path::Path;
-use std::time::Instant;
 
 pub use align::{AlignOutcome, GraphSet};
 pub use features::{FeatureKind, FeatureStore};
@@ -74,10 +74,14 @@ pub struct StageCtx<'a> {
 
 impl<'a> StageCtx<'a> {
     pub fn model(&self) -> &ModelState {
-        self.model.as_ref().expect("stage ran before monophone initialization")
+        self.model
+            .as_ref()
+            .expect("stage ran before monophone initialization")
     }
     pub fn model_mut(&mut self) -> &mut ModelState {
-        self.model.as_mut().expect("stage ran before monophone initialization")
+        self.model
+            .as_mut()
+            .expect("stage ran before monophone initialization")
     }
 
     /// Silence pdfs of the current model, for boosting.
@@ -111,7 +115,6 @@ impl<'a> StageCtx<'a> {
     }
 }
 
-
 /// MFA aligns every stage's subset with the *previous* stage's final model before
 /// training starts (`trainer.py:592-604`: `self.current_aligner = previous; self.align()`).
 /// Subsets grow (2000 -> 5000 -> 10000), so utterances new to this stage have no
@@ -136,7 +139,9 @@ pub fn align_subset_with_previous(
         &bar,
     );
     bar.finish();
-    let bar = ctx.progress.bar("align (previous model)", utts.len() as u64);
+    let bar = ctx
+        .progress
+        .bar("align (previous model)", utts.len() as u64);
     // Alignment workflows use MFA's align defaults: boost_silence 1.0 (`alignment/mixins.py:69-91`).
     let outcome = align::align_batch(
         &graphs,
@@ -231,7 +236,11 @@ pub fn run_iterations(
         let mut failed = alignments.iter().filter(|a| a.is_none()).count();
 
         if plan.realignment_iterations.contains(&iteration) {
-            let beam = if iteration == 1 { plan.initial_beam } else { None };
+            let beam = if iteration == 1 {
+                plan.initial_beam
+            } else {
+                None
+            };
             let iter_opts = align::iteration_align_options(&opts, beam);
             let silence_pdfs = ctx.silence_pdfs();
             let bar = ctx.progress.iter_bar(
@@ -306,7 +315,11 @@ pub fn run_iterations(
 }
 
 /// Scatter a stage's alignments back into a corpus-indexed vector.
-pub fn scatter(n: usize, utts: &[usize], alignments: Vec<Option<Alignment>>) -> Vec<Option<Alignment>> {
+pub fn scatter(
+    n: usize,
+    utts: &[usize],
+    alignments: Vec<Option<Alignment>>,
+) -> Vec<Option<Alignment>> {
     let mut out = vec![None; n];
     for (slot, ali) in utts.iter().zip(alignments) {
         out[*slot] = ali;
@@ -354,7 +367,11 @@ pub fn train(
     progress.plan(&plan);
     progress.stage(
         "features",
-        &format!("{} utterances, {} speakers", corpus.utts.len(), corpus.speakers.len()),
+        &format!(
+            "{} utterances, {} speakers",
+            corpus.utts.len(),
+            corpus.speakers.len()
+        ),
     );
 
     let feats = FeatureStore::build_with(
@@ -413,11 +430,16 @@ pub fn train(
     let model = build_model(&ctx)?;
 
     // Final pass: align the whole corpus with the finished model.
-    progress.stage("final", &format!("aligning {} utterances", corpus.utts.len()));
+    progress.stage(
+        "final",
+        &format!("aligning {} utterances", corpus.utts.len()),
+    );
     let final_alignments = final_alignment(&ctx, &model)?;
     let failed = final_alignments.iter().filter(|a| a.is_none()).count();
     if failed > 0 {
-        progress.warn(format!("{failed} utterances failed to align in the final pass"));
+        progress.warn(format!(
+            "{failed} utterances failed to align in the final pass"
+        ));
     }
     let alignments: Vec<Alignment> = final_alignments
         .into_iter()
@@ -515,15 +537,12 @@ impl FeatureView {
 
     /// Apply per-speaker fMLLR transforms to the current view.
     fn apply_fmllr(&mut self, ctx: &StageCtx<'_>, utts: &[usize], transforms: &[Option<Mat>]) {
-        self.feats
-            .par_iter_mut()
-            .enumerate()
-            .for_each(|(i, f)| {
-                let spk = ctx.feats.speaker_of(utts[i]);
-                if let Some(x) = &transforms[spk] {
-                    *f = viter_kaldi::feat::apply_transform(f, x);
-                }
-            });
+        self.feats.par_iter_mut().enumerate().for_each(|(i, f)| {
+            let spk = ctx.feats.speaker_of(utts[i]);
+            if let Some(x) = &transforms[spk] {
+                *f = viter_kaldi::feat::apply_transform(f, x);
+            }
+        });
     }
 }
 
@@ -543,7 +562,11 @@ fn build_model(ctx: &StageCtx<'_>) -> Result<AcousticModel> {
         silence_phones: ctx.silence_phones.clone(),
         position_dependent: ctx.cfg.position_dependent,
         mfcc: ctx.cfg.mfcc.clone(),
-        deltas: if m.lda.is_none() { Some(ctx.cfg.deltas.clone()) } else { None },
+        deltas: if m.lda.is_none() {
+            Some(ctx.cfg.deltas.clone())
+        } else {
+            None
+        },
         splice: m
             .lda
             .as_ref()
@@ -637,10 +660,11 @@ pub fn align_corpus_with(
         graph,
         ..TrainConfig::default()
     };
-    let (sl, sr) = model.splice.unwrap_or((cfg.lda.splice_left, cfg.lda.splice_right));
+    let (sl, sr) = model
+        .splice
+        .unwrap_or((cfg.lda.splice_left, cfg.lda.splice_right));
 
-    let feats =
-        FeatureStore::build_with(corpus, &model.mfcc, &cfg.deltas, sl, sr, &progress)?;
+    let feats = FeatureStore::build_with(corpus, &model.mfcc, &cfg.deltas, sl, sr, &progress)?;
     let frame_shift_s = feats.frame_shift_s();
 
     let ctx = StageCtx {
@@ -671,7 +695,10 @@ pub fn align_corpus_with(
     tracing::debug!(graphs_ms = _tg.elapsed().as_millis(), "graphs built");
     let _tf = Instant::now();
     let mut view = FeatureView::for_model(&ctx, model, &utts);
-    tracing::debug!(feats_ms = _tf.elapsed().as_millis(), "stage features derived");
+    tracing::debug!(
+        feats_ms = _tf.elapsed().as_millis(),
+        "stage features derived"
+    );
 
     // Pass 1: speaker-independent model if we have one, else the single model.
     let first_model = model.am_si.as_ref().unwrap_or(&model.am);
@@ -747,7 +774,11 @@ pub fn align_corpus_with(
 
     progress.stage_done(
         "align",
-        &format!("{} aligned, {} failed", utts.len() - outcome.failed, outcome.failed),
+        &format!(
+            "{} aligned, {} failed",
+            utts.len() - outcome.failed,
+            outcome.failed
+        ),
     );
     progress.finish();
     Ok(intervals)
@@ -761,7 +792,13 @@ mod tests {
     fn scatter_places_alignments_at_corpus_indices() {
         let utts = vec![1usize, 3];
         let alis = vec![
-            Some(Alignment { utt: "a".into(), tids: vec![1], words: vec![], prons: vec![], loglike: 0.0 }),
+            Some(Alignment {
+                utt: "a".into(),
+                tids: vec![1],
+                words: vec![],
+                prons: vec![],
+                loglike: 0.0,
+            }),
             None,
         ];
         let out = scatter(5, &utts, alis);

@@ -6,11 +6,11 @@
 //! `plans/mfa/montreal_forced_aligner/corpus/features.py`,
 //! `plans/mfa/montreal_forced_aligner/dictionary/mixins.py`.
 
+use serde::{Deserialize, Serialize};
 use viter_kaldi::align::AlignOptions;
 use viter_kaldi::feat::{DeltaOptions, MfccOptions};
 use viter_kaldi::hmm::GraphOptions;
 use viter_kaldi::transform::{FmllrOptions, FmllrUpdateType};
-use serde::{Deserialize, Serialize};
 
 /// Which stages to run. Monophone is always run (everything else bootstraps from it).
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -24,7 +24,11 @@ impl Default for Stages {
     /// MFA's default pipeline is mono -> tri -> lda -> sat
     /// (`acoustic_modeling/trainer.py:194-213`).
     fn default() -> Self {
-        Self { tri: true, lda: true, sat: true }
+        Self {
+            tri: true,
+            lda: true,
+            sat: true,
+        }
     }
 }
 
@@ -145,7 +149,10 @@ impl TriConfig {
     /// `triphone.py:319-326`: realign every 10 iterations, skipping 0.
     /// For 35 iterations: `[10, 20, 30]`.
     pub fn realignment_iterations(&self) -> Vec<usize> {
-        (0..self.num_iterations).step_by(10).filter(|&i| i != 0).collect()
+        (0..self.num_iterations)
+            .step_by(10)
+            .filter(|&i| i != 0)
+            .collect()
     }
 
     /// `triphone.py:326` final_gaussian_iteration = num_iterations - 10.
@@ -212,7 +219,10 @@ impl Default for LdaConfig {
 impl LdaConfig {
     /// Inherited from `triphone.py:319-324`: every 10 iterations, skipping 0.
     pub fn realignment_iterations(&self) -> Vec<usize> {
-        (0..self.num_iterations).step_by(10).filter(|&i| i != 0).collect()
+        (0..self.num_iterations)
+            .step_by(10)
+            .filter(|&i| i != 0)
+            .collect()
     }
     /// Inherited `triphone.py:326`.
     pub fn final_gaussian_iteration(&self) -> usize {
@@ -293,13 +303,20 @@ impl SatConfig {
         if self.quick {
             vec![10, 15]
         } else {
-            (0..self.num_iterations).step_by(10).filter(|&i| i != 0).collect()
+            (0..self.num_iterations)
+                .step_by(10)
+                .filter(|&i| i != 0)
+                .collect()
         }
     }
 
     /// `sat.py:218-222`.
     pub fn fmllr_iterations(&self) -> Vec<usize> {
-        if self.quick { vec![2, 6, 12] } else { self.fmllr_iterations.clone() }
+        if self.quick {
+            vec![2, 6, 12]
+        } else {
+            self.fmllr_iterations.clone()
+        }
     }
 
     /// `sat.py:223` (quick) vs inherited `triphone.py:326`.
@@ -385,7 +402,11 @@ impl TrainConfig {
             Stage::Lda => self.lda.subset,
             Stage::Sat => self.sat.subset,
         };
-        if want == 0 || want >= num_utts { 0 } else { want }
+        if want == 0 || want >= num_utts {
+            0
+        } else {
+            want
+        }
     }
 }
 
@@ -428,7 +449,11 @@ impl GaussianSchedule {
         } else {
             max_gaussians.saturating_sub(initial_gaussians) / final_iteration
         };
-        Self { current: initial_gaussians, increment, final_iteration }
+        Self {
+            current: initial_gaussians,
+            increment,
+            final_iteration,
+        }
     }
 
     /// Mixup target for the update at this iteration.
@@ -477,7 +502,10 @@ mod tests {
         assert_eq!(cfg.fmllr_iterations(), vec![2, 4, 6, 12]);
         assert_eq!(cfg.initial_gaussians(), 2500);
 
-        let quick = SatConfig { quick: true, ..SatConfig::default() };
+        let quick = SatConfig {
+            quick: true,
+            ..SatConfig::default()
+        };
         assert_eq!(quick.realignment_iterations(), vec![10, 15]);
         assert_eq!(quick.fmllr_iterations(), vec![2, 6, 12]);
         assert_eq!(quick.final_gaussian_iteration(), 30);
@@ -506,7 +534,10 @@ mod tests {
         let cfg = TrainConfig::default();
         assert_eq!(cfg.subset_for(Stage::Mono, 500), 0);
         assert_eq!(cfg.subset_for(Stage::Mono, 50_000), 2000);
-        let no = TrainConfig { subset: false, ..TrainConfig::default() };
+        let no = TrainConfig {
+            subset: false,
+            ..TrainConfig::default()
+        };
         assert_eq!(no.subset_for(Stage::Tri, 50_000), 0);
     }
 }

@@ -266,12 +266,15 @@ mod tests {
             vec![-1, 0, 1, 2]
         );
         let mut mixed = toy();
-        mixed.push((vec![(K_PDF_CLASS, 0), (1, 3)], GaussClusterable::new(1, 0.01)));
-        assert_eq!(find_all_keys(&mixed, AllKeysType::Intersection), vec![-1, 1]);
+        mixed.push((
+            vec![(K_PDF_CLASS, 0), (1, 3)],
+            GaussClusterable::new(1, 0.01),
+        ));
         assert_eq!(
-            find_all_keys(&mixed, AllKeysType::Union),
-            vec![-1, 0, 1, 2]
+            find_all_keys(&mixed, AllKeysType::Intersection),
+            vec![-1, 1]
         );
+        assert_eq!(find_all_keys(&mixed, AllKeysType::Union), vec![-1, 0, 1, 2]);
     }
 
     #[test]

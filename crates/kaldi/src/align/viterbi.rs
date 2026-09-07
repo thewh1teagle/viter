@@ -7,7 +7,7 @@
 //! `max_active` / `min_active` adaptive beam. On failure to reach a final state, alignment is
 //! retried with `retry_beam`, exactly as `gmm_align_compiled` does.
 
-use crate::hmm::{Graph, TransitionModel, NO_PRON, NO_WORD};
+use crate::hmm::{Graph, NO_PRON, NO_WORD, TransitionModel};
 use crate::types::{Alignment, PdfId, TransitionId, WordId};
 use ndarray::Array2;
 
@@ -182,13 +182,14 @@ impl<'a> Decoder<'a> {
             } else {
                 // Kaldi restricts the nth_element range to the first max_active entries when
                 // the array was already partitioned above.
-                let end = self.tmp.len().min(
-                    if self.tmp.len() > self.opts.max_active {
+                let end = self
+                    .tmp
+                    .len()
+                    .min(if self.tmp.len() > self.opts.max_active {
                         self.opts.max_active
                     } else {
                         self.tmp.len()
-                    },
-                );
+                    });
                 if self.opts.min_active < end {
                     self.tmp[..end]
                         .select_nth_unstable_by(self.opts.min_active, |a, b| a.total_cmp(b));
@@ -306,8 +307,7 @@ impl<'a> Decoder<'a> {
 
     fn reached_final(&self) -> bool {
         self.cur.states.iter().any(|&s| {
-            self.graph.is_final(s)
-                && self.arena.toks[self.cur.slot[s as usize]].cost.is_finite()
+            self.graph.is_final(s) && self.arena.toks[self.cur.slot[s as usize]].cost.is_finite()
         })
     }
 

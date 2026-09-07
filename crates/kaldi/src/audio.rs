@@ -12,8 +12,7 @@ use std::path::Path;
 
 use rubato::{
     Async, FixedAsync, Resampler, SincInterpolationParameters, SincInterpolationType,
-    WindowFunction,
-    audioadapter_buffers::direct::SequentialSliceOfVecs,
+    WindowFunction, audioadapter_buffers::direct::SequentialSliceOfVecs,
 };
 use symphonia::core::audio::GenericAudioBufferRef;
 use symphonia::core::codecs::audio::AudioDecoderOptions;
@@ -139,10 +138,7 @@ pub fn read(path: &Path) -> Result<Audio, AudioError> {
                 break;
             }
             Err(source) => {
-                return Err(AudioError::Decode {
-                    path: disp,
-                    source,
-                });
+                return Err(AudioError::Decode { path: disp, source });
             }
         };
 
@@ -159,10 +155,7 @@ pub fn read(path: &Path) -> Result<Audio, AudioError> {
                 continue;
             }
             Err(source) => {
-                return Err(AudioError::Decode {
-                    path: disp,
-                    source,
-                });
+                return Err(AudioError::Decode { path: disp, source });
             }
         };
 
@@ -303,10 +296,9 @@ pub fn write_wav(path: &Path, a: &Audio) -> Result<(), AudioError> {
             source,
         })?;
     }
-    writer.finalize().map_err(|source| AudioError::Write {
-        path: disp,
-        source,
-    })
+    writer
+        .finalize()
+        .map_err(|source| AudioError::Write { path: disp, source })
 }
 
 /// Extract `[start_s, end_s)` as a new `Audio`. Out-of-range bounds are clamped;
@@ -336,9 +328,7 @@ mod tests {
     fn tone(rate: u32, secs: f32, freq: f32) -> Audio {
         let n = (rate as f32 * secs) as usize;
         let samples = (0..n)
-            .map(|i| {
-                (2.0 * std::f32::consts::PI * freq * i as f32 / rate as f32).sin() * 0.5
-            })
+            .map(|i| (2.0 * std::f32::consts::PI * freq * i as f32 / rate as f32).sin() * 0.5)
             .collect();
         Audio {
             samples,
@@ -362,7 +352,11 @@ mod tests {
         let expected = a.samples.len() as f64 * 16_000.0 / 44_100.0;
         let diff = (b.samples.len() as f64 - expected).abs();
         // Allow a small edge tolerance from the resampler's chunking.
-        assert!(diff < 64.0, "len {} vs expected {expected}", b.samples.len());
+        assert!(
+            diff < 64.0,
+            "len {} vs expected {expected}",
+            b.samples.len()
+        );
     }
 
     #[test]

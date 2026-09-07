@@ -7,9 +7,9 @@
 //! does for all exported labels.
 
 use anyhow::{Context, Result};
-use viter_kaldi::types::{IntervalAlignment, SymbolTable, untag_phone};
 use std::fmt::Write as _;
 use std::path::Path;
+use viter_kaldi::types::{IntervalAlignment, SymbolTable, untag_phone};
 
 /// Number of decimals Kaldi's CTM writer uses for times.
 const TIME_DECIMALS: usize = 2;
@@ -27,7 +27,8 @@ pub fn write_ctm(
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
     {
-        std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
     }
 
     let mut phone_out = String::new();
@@ -66,7 +67,13 @@ pub fn phone_ctm(ali: &IntervalAlignment, phones: &SymbolTable) -> String {
     for p in &ali.phones {
         let start = p.start_frame as f64 * shift;
         let dur = (p.end_frame - p.start_frame) as f64 * shift;
-        write_row(&mut s, &ali.utt, start, dur, untag_phone(phones.sym(p.phone)));
+        write_row(
+            &mut s,
+            &ali.utt,
+            start,
+            dur,
+            untag_phone(phones.sym(p.phone)),
+        );
     }
     s
 }

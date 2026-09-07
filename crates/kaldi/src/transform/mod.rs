@@ -52,7 +52,9 @@ pub fn compose_transforms(a: &Mat, b: &Mat, b_is_affine: bool) -> Mat {
         }
         // Extend b by one row and one column, with a 1 in the corner.
         let mut b_ext: Mat = ndarray::Array2::zeros((b.nrows() + 1, b.ncols() + 1));
-        b_ext.slice_mut(ndarray::s![..b.nrows(), ..b.ncols()]).assign(b);
+        b_ext
+            .slice_mut(ndarray::s![..b.nrows(), ..b.ncols()])
+            .assign(b);
         b_ext[[b.nrows(), b.ncols()]] = 1.0;
         return a.dot(&b_ext);
     }
@@ -67,7 +69,10 @@ pub fn compose_transforms(a: &Mat, b: &Mat, b_is_affine: bool) -> Mat {
 /// for a `[dim, dim + 1]` transform.
 pub fn apply_affine_transform(xform: &Mat, v: &mut [f32]) {
     let dim = xform.nrows();
-    assert!(dim > 0 && xform.ncols() == dim + 1 && v.len() == dim, "apply_affine_transform: bad dims");
+    assert!(
+        dim > 0 && xform.ncols() == dim + 1 && v.len() == dim,
+        "apply_affine_transform: bad dims"
+    );
     let src: Vec<f32> = v.to_vec();
     for i in 0..dim {
         let mut acc = xform[[i, dim]];
@@ -129,9 +134,8 @@ mod tests {
     /// with a square MLLT matrix on the left keeps the affine column.
     #[test]
     fn compose_mllt_with_lda_shape() {
-        let mllt: Mat = ndarray::Array2::from_shape_fn((4, 4), |(i, j)| {
-            if i == j { 1.0 } else { 0.1 }
-        });
+        let mllt: Mat =
+            ndarray::Array2::from_shape_fn((4, 4), |(i, j)| if i == j { 1.0 } else { 0.1 });
         let lda: Mat = ndarray::Array2::from_shape_fn((4, 7), |(i, j)| (i + j) as f32 * 0.1);
         let c = compose_transforms(&mllt, &lda, true);
         assert_eq!(c.shape(), &[4, 7]);

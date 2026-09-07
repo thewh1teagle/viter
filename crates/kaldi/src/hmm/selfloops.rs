@@ -74,9 +74,7 @@ pub(super) fn make_preceding_input_symbols_same_class(
                 let dest = a.next as usize;
                 if dest < orig_n && !copy_for[dest].is_empty() {
                     let c = class_of(a.tid);
-                    if let Some(&(_, target)) =
-                        copy_for[dest].iter().find(|(cc, _)| *cc == c)
-                    {
+                    if let Some(&(_, target)) = copy_for[dest].iter().find(|(cc, _)| *cc == c) {
                         a.next = target;
                     }
                 }
@@ -141,4 +139,3 @@ pub(super) fn add_self_loops(graph: &mut Graph, tm: &TransitionModel, self_loop_
         }
     }
 }
-

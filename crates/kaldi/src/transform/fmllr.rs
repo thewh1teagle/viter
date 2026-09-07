@@ -36,7 +36,11 @@ pub struct FmllrOptions {
 
 impl Default for FmllrOptions {
     fn default() -> Self {
-        Self { update_type: FmllrUpdateType::Full, min_count: 500.0, num_iters: 40 }
+        Self {
+            update_type: FmllrUpdateType::Full,
+            min_count: 500.0,
+            num_iters: 40,
+        }
     }
 }
 
@@ -63,7 +67,12 @@ struct SingleFrameStats {
 
 impl SingleFrameStats {
     fn new(dim: usize) -> Self {
-        Self { x: vec![0.0; dim], a: vec![0.0; dim], b: vec![0.0; dim], count: 0.0 }
+        Self {
+            x: vec![0.0; dim],
+            a: vec![0.0; dim],
+            b: vec![0.0; dim],
+            count: 0.0,
+        }
     }
     fn reset(&mut self) {
         self.count = 0.0;
@@ -192,7 +201,11 @@ impl FmllrDiagGmmAccs {
     pub fn accumulate_from_posteriors(&mut self, gmm: &DiagGmm, x: &[f32], posteriors: &[f32]) {
         assert_eq!(x.len(), self.dim, "fMLLR: data dim mismatch");
         assert_eq!(gmm.dim(), self.dim, "fMLLR: gmm dim mismatch");
-        assert_eq!(posteriors.len(), gmm.num_gauss(), "fMLLR: posterior count mismatch");
+        assert_eq!(
+            posteriors.len(),
+            gmm.num_gauss(),
+            "fMLLR: posterior count mismatch"
+        );
 
         if self.data_has_changed(x) {
             self.commit_single_frame_stats();
@@ -293,7 +306,11 @@ impl FmllrDiagGmmAccs {
         let in_xform = match xform {
             Some(m) => {
                 assert_eq!(m.nrows(), dim, "fMLLR: xform has wrong number of rows");
-                assert_eq!(m.ncols(), dim + 1, "fMLLR: xform has wrong number of columns");
+                assert_eq!(
+                    m.ncols(),
+                    dim + 1,
+                    "fMLLR: xform has wrong number of columns"
+                );
                 m.clone()
             }
             None => identity_affine(dim),
@@ -303,12 +320,8 @@ impl FmllrDiagGmmAccs {
             "fMLLR: initial transform must be non-singular (e.g. the identity)"
         );
 
-        if opts.update_type == FmllrUpdateType::Full
-            && stats.update_type != FmllrUpdateType::Full
-        {
-            panic!(
-                "fMLLR: requesting a full update but stats were accumulated for a limited type"
-            );
+        if opts.update_type == FmllrUpdateType::Full && stats.update_type != FmllrUpdateType::Full {
+            panic!("fMLLR: requesting a full update but stats were accumulated for a limited type");
         }
 
         if stats.beta <= opts.min_count {
@@ -321,11 +334,9 @@ impl FmllrDiagGmmAccs {
         }
 
         let (out, impr) = match opts.update_type {
-            FmllrUpdateType::Full => super::fmllr_update::compute_fmllr_matrix_full(
-                &in_xform,
-                &stats,
-                opts.num_iters,
-            ),
+            FmllrUpdateType::Full => {
+                super::fmllr_update::compute_fmllr_matrix_full(&in_xform, &stats, opts.num_iters)
+            }
             FmllrUpdateType::Diag => {
                 super::fmllr_update::compute_fmllr_matrix_diagonal(&in_xform, &stats)
             }
@@ -337,7 +348,6 @@ impl FmllrDiagGmmAccs {
         (out, impr, stats.beta)
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -391,14 +401,21 @@ mod tests {
     #[test]
     fn count_matches_frames() {
         let (_g, accs) = accumulate_shifted(4, 0.0, 120);
-        assert!((accs.count() - 120.0).abs() < 1e-2, "count = {}", accs.count());
+        assert!(
+            (accs.count() - 120.0).abs() < 1e-2,
+            "count = {}",
+            accs.count()
+        );
     }
 
     #[test]
     fn full_update_increases_objective() {
         let dim = 4;
         let (_g, accs) = accumulate_shifted(dim, 3.0, 900);
-        let opts = FmllrOptions { min_count: 10.0, ..Default::default() };
+        let opts = FmllrOptions {
+            min_count: 10.0,
+            ..Default::default()
+        };
         let start = identity_affine(dim);
         let before = fmllr_aux_func_diag_gmm(&start, &accs);
         let (out, impr, count) = accs.update(&opts, None);
@@ -408,7 +425,11 @@ mod tests {
         let after = fmllr_aux_func_diag_gmm(&out, &accs);
         assert!((after - before - impr).abs() < 1e-3 * impr.abs().max(1.0));
         // The transform should undo part of the shift: negative offsets.
-        assert!(out.column(dim).iter().any(|&v| v < 0.0), "offsets: {:?}", out.column(dim));
+        assert!(
+            out.column(dim).iter().any(|&v| v < 0.0),
+            "offsets: {:?}",
+            out.column(dim)
+        );
     }
 
     #[test]
@@ -426,8 +447,11 @@ mod tests {
     fn none_update_is_identity_passthrough() {
         let dim = 3;
         let (_g, accs) = accumulate_shifted(dim, 1.0, 900);
-        let opts =
-            FmllrOptions { update_type: FmllrUpdateType::None, min_count: 1.0, ..Default::default() };
+        let opts = FmllrOptions {
+            update_type: FmllrUpdateType::None,
+            min_count: 1.0,
+            ..Default::default()
+        };
         let (out, impr, _c) = accs.update(&opts, None);
         assert_eq!(impr, 0.0);
         assert_eq!(out, identity_affine(dim));
@@ -518,6 +542,9 @@ mod tests {
             want += accs.k_at(d, d);
             want -= 0.5 * accs.g[d].get(d, d);
         }
-        assert!((got - want).abs() < 1e-6 * want.abs().max(1.0), "{got} vs {want}");
+        assert!(
+            (got - want).abs() < 1e-6 * want.abs().max(1.0),
+            "{got} vs {want}"
+        );
     }
 }

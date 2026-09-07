@@ -8,14 +8,14 @@
 //! the new tree, then iterate exactly as monophone does.
 
 use anyhow::{Result, anyhow};
+use rayon::prelude::*;
+use std::collections::HashMap;
 use viter_kaldi::gmm::AmDiagGmm;
 use viter_kaldi::hmm::{self, ContextDependency, TransitionModel};
 use viter_kaldi::tree::{
     self, AccumulateTreeStatsOptions, BuildTreeStats, EventType, GaussClusterable,
 };
 use viter_kaldi::types::{Alignment, Feats, PhoneId};
-use rayon::prelude::*;
-use std::collections::HashMap;
 
 use crate::config::{GaussianSchedule, Stage, TriConfig};
 use crate::pipeline::{
@@ -86,8 +86,7 @@ pub fn run(ctx: &mut StageCtx<'_>, cfg: &TriConfig) -> Result<StageOutput> {
         },
     )?;
 
-    ctx.progress
-        .stage_done("tri", "");
+    ctx.progress.stage_done("tri", "");
     Ok(StageOutput { utts, alignments })
 }
 
@@ -160,8 +159,7 @@ pub fn build_tree_stage(
     // position variants together) gets a shared, splittable root
     // (`tree::mfa_roots`, MFA's roots file).
     let nonsil_groups = nonsilence_groups(ctx);
-    let (phone_sets, share_roots, do_split) =
-        tree::mfa_roots(&nonsil_groups, &ctx.silence_phones);
+    let (phone_sets, share_roots, do_split) = tree::mfa_roots(&nonsil_groups, &ctx.silence_phones);
 
     // Questions: automatically obtained from the central-state statistics
     // (`triphone.py:403`, Kaldi `AutomaticallyObtainQuestions` with pdf-class [1], P=1).
@@ -190,9 +188,17 @@ pub fn build_tree_stage(
     );
     spinner.finish();
 
-    let ctx_dep = ContextDependency { n: CONTEXT_WIDTH, p: CENTRAL_POSITION, map: event_map };
+    let ctx_dep = ContextDependency {
+        n: CONTEXT_WIDTH,
+        p: CENTRAL_POSITION,
+        map: event_map,
+    };
     let tm = TransitionModel::new(&ctx_dep, &m.topo);
-    tracing::info!(leaves = num_leaves, pdfs = ctx_dep.num_pdfs(), "built decision tree");
+    tracing::info!(
+        leaves = num_leaves,
+        pdfs = ctx_dep.num_pdfs(),
+        "built decision tree"
+    );
 
     // Initialize the acoustic model on the new tree.
     let spinner = ctx.progress.spinner("init model");
@@ -224,7 +230,10 @@ fn init_from_stats(
         let summed = match tree::sum_stats(leaf_stats) {
             Some(s) => s,
             None => {
-                tracing::debug!(pdf = leaf, "tree leaf has no stats; using the global average");
+                tracing::debug!(
+                    pdf = leaf,
+                    "tree leaf has no stats; using the global average"
+                );
                 avg.clone()
             }
         };
@@ -349,8 +358,9 @@ fn install_and_train(
     let lost = converted.iter().filter(|a| a.is_none()).count()
         - prev_alignments.iter().filter(|a| a.is_none()).count();
     if lost > 0 {
-        ctx.progress
-            .warn(format!("{lost} alignments could not be converted to the new tree"));
+        ctx.progress.warn(format!(
+            "{lost} alignments could not be converted to the new tree"
+        ));
     }
 
     {

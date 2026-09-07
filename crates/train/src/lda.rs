@@ -8,17 +8,15 @@
 //! running LDA transform (`compose-transforms`, `lda.py:455-461`).
 
 use anyhow::{Result, anyhow};
-use viter_kaldi::transform::{
-    self, LdaEstimate, LdaEstimateOptions, Mat, MlltAccs,
-};
-use viter_kaldi::types::{Alignment, Feats};
 use rand::SeedableRng;
 use rayon::prelude::*;
+use viter_kaldi::transform::{self, LdaEstimate, LdaEstimateOptions, Mat, MlltAccs};
+use viter_kaldi::types::{Alignment, Feats};
 
 use crate::config::{GaussianSchedule, LdaConfig, Stage};
 use crate::pipeline::{
-    FeatureKind, GraphSet, IterationHooks, IterationPlan, StageCtx, StageOutput,
-    UpdateOptions, run_iterations,
+    FeatureKind, GraphSet, IterationHooks, IterationPlan, StageCtx, StageOutput, UpdateOptions,
+    run_iterations,
 };
 use crate::tri::{self, TreeSetup};
 
@@ -50,7 +48,9 @@ pub fn run(ctx: &mut StageCtx<'_>, cfg: &LdaConfig) -> Result<StageOutput> {
 
     // 2. Rebuild the tree on LDA features. `lda.py:380-386` calls `_setup_tree` with
     // `initial_mix_up=False`, so the model starts at one gaussian per leaf.
-    let feats = ctx.feats.feats_for_many(&utts, FeatureKind::SpliceLda(&lda_mat));
+    let feats = ctx
+        .feats
+        .feats_for_many(&utts, FeatureKind::SpliceLda(&lda_mat));
     let setup = tri::build_tree_stage(
         ctx,
         &utts,
@@ -138,20 +138,25 @@ pub fn run(ctx: &mut StageCtx<'_>, cfg: &LdaConfig) -> Result<StageOutput> {
 
     let mut hooks = MlltHooks { cfg: cfg.clone() };
     let rebuild = |c: &StageCtx<'_>, u: &[usize]| {
-        let lda = c.model().lda.clone().expect("lda stage always has a transform");
+        let lda = c
+            .model()
+            .lda
+            .clone()
+            .expect("lda stage always has a transform");
         c.feats.feats_for_many(u, FeatureKind::SpliceLda(&lda))
     };
     // Features are recomputed from the current transform each iteration only when the
     // hook signals an MLLT update, so the initial view is the one built above.
-    let feats = ctx
-        .feats
-        .feats_for_many(&utts, FeatureKind::SpliceLda(ctx.model().lda.as_ref().unwrap()));
+    let feats = ctx.feats.feats_for_many(
+        &utts,
+        FeatureKind::SpliceLda(ctx.model().lda.as_ref().unwrap()),
+    );
 
-    let alignments =
-        run_iterations(ctx, &mut plan, &mut hooks, feats, &rebuild, &graphs, converted)?;
+    let alignments = run_iterations(
+        ctx, &mut plan, &mut hooks, feats, &rebuild, &graphs, converted,
+    )?;
 
-    ctx.progress
-        .stage_done("lda", "");
+    ctx.progress.stage_done("lda", "");
     Ok(StageOutput { utts, alignments })
 }
 
@@ -264,12 +269,7 @@ impl IterationHooks for MlltHooks {
                                 let x = row.as_slice().expect("rows are contiguous");
                                 let gmm = m.am.pdf(pdf);
                                 gmm.component_posteriors(x, &mut posteriors);
-                                acc.accumulate_from_posteriors(
-                                    gmm,
-                                    x,
-                                    &posteriors,
-                                    &mut rng,
-                                );
+                                acc.accumulate_from_posteriors(gmm, x, &posteriors, &mut rng);
                             }
                         }
                         bar.inc(1);

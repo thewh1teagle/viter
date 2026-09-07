@@ -11,11 +11,9 @@ pub mod transition;
 pub mod utils;
 
 pub use context::{ContextDependency, PDF_CLASS_KEY};
-pub use graph::{build_graph, graph_pdfs, Arc, Graph, GraphOptions, GraphState, NO_PRON, NO_WORD};
-pub use topology::{HmmState, HmmTopology, TopologyEntry, NO_PDF};
-pub use transition::{
-    MleTransitionUpdateConfig, TransitionAccs, TransitionModel, Tuple,
-};
+pub use graph::{Arc, Graph, GraphOptions, GraphState, NO_PRON, NO_WORD, build_graph, graph_pdfs};
+pub use topology::{HmmState, HmmTopology, NO_PDF, TopologyEntry};
+pub use transition::{MleTransitionUpdateConfig, TransitionAccs, TransitionModel, Tuple};
 pub use utils::{
     convert_alignment, is_reordered, split_to_phones, split_to_phones_checked, to_intervals,
 };

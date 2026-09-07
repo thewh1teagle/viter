@@ -7,12 +7,10 @@
 //! (transitions first, then GMM) and the fact that stats are accumulated with the
 //! unboosted model.
 
-use viter_kaldi::gmm::{
-    self, AccumAmDiagGmm, AmDiagGmm, GmmFlags, MleDiagGmmOptions,
-};
+use rayon::prelude::*;
+use viter_kaldi::gmm::{self, AccumAmDiagGmm, AmDiagGmm, GmmFlags, MleDiagGmmOptions};
 use viter_kaldi::hmm::{MleTransitionUpdateConfig, TransitionAccs, TransitionModel};
 use viter_kaldi::types::{Alignment, Feats};
-use rayon::prelude::*;
 
 use super::progress::Bar;
 
@@ -145,7 +143,8 @@ fn accumulate_one(
                 tot_like += like as f64;
                 let stats_row = sf.row(t);
                 let stats_x = stats_row.as_slice().expect("feature rows are contiguous");
-                out.gmm.accumulate_from_posteriors(pdf, stats_x, &posteriors);
+                out.gmm
+                    .accumulate_from_posteriors(pdf, stats_x, &posteriors);
             }
             None => {
                 let like = out.gmm.accumulate_for_gmm(am, pdf, post_x, 1.0);
@@ -222,7 +221,14 @@ pub fn update_model(
     // (Kaldi AmDiagGmm::SplitByCount / GetSplitTargets with `power`).
     if opts.mixup > 0 && opts.mixup > am.num_gauss() {
         let occs = stats.gmm.pdf_occupancies();
-        am.split_by_count(&occs, opts.mixup, opts.perturb_factor, opts.power, gopts.min_gaussian_occupancy as f32, rng);
+        am.split_by_count(
+            &occs,
+            opts.mixup,
+            opts.perturb_factor,
+            opts.power,
+            gopts.min_gaussian_occupancy as f32,
+            rng,
+        );
     }
 
     UpdateResult {
@@ -246,7 +252,11 @@ mod tests {
     #[test]
     fn loglike_per_frame_handles_empty() {
         let s = Stats {
-            gmm: AccumAmDiagGmm { accs: Vec::new(), total_frames: 0.0, total_loglike: -5.0 },
+            gmm: AccumAmDiagGmm {
+                accs: Vec::new(),
+                total_frames: 0.0,
+                total_loglike: -5.0,
+            },
             transitions: TransitionAccs(Vec::new()),
         };
         assert_eq!(s.loglike_per_frame(), 0.0);

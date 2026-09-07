@@ -231,7 +231,10 @@ impl GpuContext {
         for (i, j) in jobs.iter().enumerate() {
             let f = j.frames * padded * 4;
             let s = j.frames * j.sel.len() * 4;
-            assert!(j.frames <= max_frames, "utterance too long for one dispatch");
+            assert!(
+                j.frames <= max_frames,
+                "utterance too long for one dispatch"
+            );
             if i > start && (fb + f > cap || sb + s > cap) {
                 groups.push((start, i));
                 start = i;
@@ -247,7 +250,12 @@ impl GpuContext {
         groups
     }
 
-    fn upload_model(&self, version: u64, packed_rows: &Array2<f32>, offsets: &[u32]) -> ResidentModel {
+    fn upload_model(
+        &self,
+        version: u64,
+        packed_rows: &Array2<f32>,
+        offsets: &[u32],
+    ) -> ResidentModel {
         let width = packed_rows.ncols();
         let padded = padded_width(width);
         let rows = packed_rows.nrows();
@@ -269,7 +277,14 @@ impl GpuContext {
     }
 
     /// Make sure the persistent buffers can hold this group.
-    fn ensure_scratch(&self, scratch: &mut Option<Scratch>, feats: u64, sel: u64, jobs: u64, scores: u64) {
+    fn ensure_scratch(
+        &self,
+        scratch: &mut Option<Scratch>,
+        feats: u64,
+        sel: u64,
+        jobs: u64,
+        scores: u64,
+    ) {
         let fits = scratch.as_ref().is_some_and(|s| {
             s.feats_cap >= feats && s.sel_cap >= sel && s.jobs_cap >= jobs && s.scores_cap >= scores
         });
@@ -353,8 +368,10 @@ impl GpuContext {
         let s = scratch.as_ref().expect("scratch allocated");
 
         let _t1 = std::time::Instant::now();
-        self.queue.write_buffer(&s.feats, 0, bytemuck::cast_slice(&pad_f32(&feats)));
-        self.queue.write_buffer(&s.sel, 0, bytemuck::cast_slice(&pad_u32(&sel)));
+        self.queue
+            .write_buffer(&s.feats, 0, bytemuck::cast_slice(&pad_f32(&feats)));
+        self.queue
+            .write_buffer(&s.sel, 0, bytemuck::cast_slice(&pad_u32(&sel)));
         self.queue.write_buffer(&s.jobs, 0, &table);
 
         let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -380,7 +397,9 @@ impl GpuContext {
 
         let mut enc = self
             .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("score-encoder") });
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("score-encoder"),
+            });
         {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("score-pass"),
@@ -404,24 +423,33 @@ impl GpuContext {
         self.queue.submit(Some(enc.finish()));
 
         let (tx, rx) = std::sync::mpsc::channel();
-        s.readback.slice(..scores_bytes).map_async(wgpu::MapMode::Read, move |r| {
-            let _ = tx.send(r);
-        });
+        s.readback
+            .slice(..scores_bytes)
+            .map_async(wgpu::MapMode::Read, move |r| {
+                let _ = tx.send(r);
+            });
         self.device
             .poll(wgpu::PollType::wait_indefinitely())
             .expect("gpu poll failed");
-        rx.recv().expect("map callback dropped").expect("buffer map failed");
+        rx.recv()
+            .expect("map callback dropped")
+            .expect("buffer map failed");
         let _t3 = std::time::Instant::now();
 
         let result = {
-            let view = s.readback.slice(..scores_bytes).get_mapped_range().expect("mapped range");
+            let view = s
+                .readback
+                .slice(..scores_bytes)
+                .get_mapped_range()
+                .expect("mapped range");
             let all: &[f32] = bytemuck::cast_slice(&view[..]);
             let mut off = 0usize;
             jobs.iter()
                 .map(|j| {
                     let n = j.frames * j.sel.len();
-                    let m = Array2::from_shape_vec((j.frames, j.sel.len()), all[off..off + n].to_vec())
-                        .expect("job output shape");
+                    let m =
+                        Array2::from_shape_vec((j.frames, j.sel.len()), all[off..off + n].to_vec())
+                            .expect("job output shape");
                     off += n;
                     m
                 })
@@ -451,7 +479,10 @@ impl GpuContext {
 }
 
 fn bind<'a>(binding: u32, buf: &'a wgpu::Buffer) -> wgpu::BindGroupEntry<'a> {
-    wgpu::BindGroupEntry { binding, resource: buf.as_entire_binding() }
+    wgpu::BindGroupEntry {
+        binding,
+        resource: buf.as_entire_binding(),
+    }
 }
 
 fn storage_entry(binding: u32, read_only: bool) -> wgpu::BindGroupLayoutEntry {

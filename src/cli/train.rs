@@ -5,11 +5,13 @@ use std::time::Instant;
 
 use anyhow::Context;
 use clap::Args;
+use owo_colors::OwoColorize;
 use viter_io::textgrid;
 use viter_train::config::TrainConfig;
-use owo_colors::OwoColorize;
 
-use super::{CorpusArgs, ensure_parent, field, fmt_duration, fmt_rtf, header, output_path, success, warn};
+use super::{
+    CorpusArgs, ensure_parent, field, fmt_duration, fmt_rtf, header, output_path, success, warn,
+};
 
 #[derive(Args, Debug)]
 pub struct TrainArgs {
@@ -149,7 +151,10 @@ pub fn run(args: TrainArgs) -> anyhow::Result<()> {
     } else {
         field("failed", 0);
     }
-    field("audio", fmt_duration(std::time::Duration::from_secs_f64(audio_seconds)));
+    field(
+        "audio",
+        fmt_duration(std::time::Duration::from_secs_f64(audio_seconds)),
+    );
     field("elapsed", fmt_duration(elapsed));
     field("RTF", fmt_rtf(elapsed, audio_seconds));
     if let Some(rss) = super::peak_rss() {
@@ -192,7 +197,12 @@ fn print_corpus_summary(corpus: &viter_io::corpus::Corpus) {
         return;
     }
     let oov_tokens: usize = corpus.oov_words.values().sum();
-    field("OOV words", format!("{oov_types} types / {oov_tokens} tokens").yellow().to_string());
+    field(
+        "OOV words",
+        format!("{oov_types} types / {oov_tokens} tokens")
+            .yellow()
+            .to_string(),
+    );
 
     let mut top: Vec<(&String, &usize)> = corpus.oov_words.iter().collect();
     // Most frequent first; ties broken alphabetically so the output is deterministic.
@@ -201,7 +211,10 @@ fn print_corpus_summary(corpus: &viter_io::corpus::Corpus) {
         println!("      {:<24} {}", word.yellow(), count.to_string().dimmed());
     }
     if oov_types > 10 {
-        println!("      {}", format!("... and {} more", oov_types - 10).dimmed());
+        println!(
+            "      {}",
+            format!("... and {} more", oov_types - 10).dimmed()
+        );
     }
 }
 

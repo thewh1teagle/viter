@@ -20,11 +20,11 @@
 //!   is deterministic and agrees with `nth_element` whenever distances are
 //!   distinct. CONTRACT-DEVIATION: documented tie-break, no Kaldi equivalent.
 
-use super::heap::{Heap, OrdF64};
 use super::clusterable::{
     GaussClusterable, add_to_clusters, sum_clusterable, sum_clusterable_normalizer,
     sum_clusterable_objf,
 };
+use super::heap::{Heap, OrdF64};
 use rand::RngExt;
 use rand::SeedableRng;
 use rand_xoshiro::Xoshiro256PlusPlus;
@@ -149,11 +149,7 @@ pub fn cluster_bottom_up(
                             }
                             let dd = dist_vec[idx(ii, jj)];
                             if dd <= max_merge_thresh {
-                                queue.push(std::cmp::Reverse((
-                                    OrdF64(dd),
-                                    ii as u32,
-                                    jj as u32,
-                                )));
+                                queue.push(std::cmp::Reverse((OrdF64(dd), ii as u32, jj as u32)));
                             }
                         }
                     }
@@ -196,8 +192,7 @@ pub fn cluster_bottom_up_compartmentalized(
         .iter()
         .map(|p| p.iter().map(|c| Some(c.clone())).collect())
         .collect();
-    let mut assignments: Vec<Vec<usize>> =
-        npoints.iter().map(|n| (0..*n).collect()).collect();
+    let mut assignments: Vec<Vec<usize>> = npoints.iter().map(|n| (0..*n).collect()).collect();
     let mut dist_vec: Vec<Vec<f64>> = npoints
         .iter()
         .map(|n| vec![0.0f64; n * n.saturating_sub(1) / 2])
@@ -210,27 +205,26 @@ pub fn cluster_bottom_up_compartmentalized(
     type Elem = std::cmp::Reverse<(OrdF64, u32, u32, u32)>;
     let mut queue: Heap<Elem> = Heap::new();
 
-    let set_distance =
-        |queue: &mut Heap<Elem>,
-         dist_vec: &mut [Vec<f64>],
-         clusters: &[Vec<Option<GaussClusterable>>],
-         comp: usize,
-         i: usize,
-         j: usize| {
-            let d = clusters[comp][i]
-                .as_ref()
-                .unwrap()
-                .distance(clusters[comp][j].as_ref().unwrap());
-            dist_vec[comp][idx(i, j)] = d;
-            if d < max_merge_thresh {
-                queue.push(std::cmp::Reverse((
-                    OrdF64(d),
-                    comp as u32,
-                    i as u32,
-                    j as u32,
-                )));
-            }
-        };
+    let set_distance = |queue: &mut Heap<Elem>,
+                        dist_vec: &mut [Vec<f64>],
+                        clusters: &[Vec<Option<GaussClusterable>>],
+                        comp: usize,
+                        i: usize,
+                        j: usize| {
+        let d = clusters[comp][i]
+            .as_ref()
+            .unwrap()
+            .distance(clusters[comp][j].as_ref().unwrap());
+        dist_vec[comp][idx(i, j)] = d;
+        if d < max_merge_thresh {
+            queue.push(std::cmp::Reverse((
+                OrdF64(d),
+                comp as u32,
+                i as u32,
+                j as u32,
+            )));
+        }
+    };
 
     for comp in 0..ncomp {
         for i in 0..npoints[comp] {
@@ -428,8 +422,7 @@ pub fn refine_clusters(
                 );
                 let other = info[point * top_n + index];
                 let other_clust_objf = clust_objf[other.clust as usize];
-                let impr =
-                    other.objf + own_clust_minus_me_objf - other_clust_objf - own_clust_objf;
+                let impr = other.objf + own_clust_minus_me_objf - other_clust_objf - own_clust_objf;
                 if impr > 0.0 {
                     ans += impr;
                     // MovePoint
@@ -538,8 +531,10 @@ fn cluster_kmeans_once(
         sum_clusterable_objf(&clusters_out) - all_stats.objf()
     };
 
-    let mut clusters: Vec<GaussClusterable> =
-        clusters_out.into_iter().map(|c| c.expect("filled")).collect();
+    let mut clusters: Vec<GaussClusterable> = clusters_out
+        .into_iter()
+        .map(|c| c.expect("filled"))
+        .collect();
 
     for _ in 0..cfg.num_iters {
         let impr = refine_clusters(points, &mut clusters, &mut assignments_out, cfg.refine_cfg);

@@ -27,7 +27,11 @@ pub struct ServeOptions {
 
 impl Default for ServeOptions {
     fn default() -> Self {
-        Self { dir: PathBuf::from("."), port: 7878, open: true }
+        Self {
+            dir: PathBuf::from("."),
+            port: 7878,
+            open: true,
+        }
     }
 }
 
@@ -44,8 +48,8 @@ pub async fn serve(opts: ServeOptions) -> anyhow::Result<()> {
         .with_context(|| format!("cannot open directory {}", opts.dir.display()))?;
     anyhow::ensure!(dir.is_dir(), "{} is not a directory", dir.display());
 
-    let state = AppState::new(dir.clone())
-        .with_context(|| format!("failed to scan {}", dir.display()))?;
+    let state =
+        AppState::new(dir.clone()).with_context(|| format!("failed to scan {}", dir.display()))?;
     let num_files = state.num_files();
 
     let app = router(state);
@@ -60,7 +64,9 @@ pub async fn serve(opts: ServeOptions) -> anyhow::Result<()> {
 
     print_banner(&url, &dir, num_files);
 
-    if opts.open && let Err(e) = open::that(&url) {
+    if opts.open
+        && let Err(e) = open::that(&url)
+    {
         // Not fatal: headless machines and remote shells have no browser to open.
         tracing::warn!(error = %e, "could not open a browser; visit {url}");
     }
@@ -108,13 +114,17 @@ async fn spa_fallback(uri: axum::http::Uri) -> Response {
     match embedded("index.html") {
         Some(resp) => resp,
         None => {
-            tracing::error!("web/dist/index.html is missing from the binary; run `pnpm build` in web/");
+            tracing::error!(
+                "web/dist/index.html is missing from the binary; run `pnpm build` in web/"
+            );
             let mut resp = Response::new(Body::from(
                 "The viewer was not built into this binary. Run `pnpm build` in web/ and rebuild.",
             ));
             *resp.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-            resp.headers_mut()
-                .insert(header::CONTENT_TYPE, HeaderValue::from_static("text/plain; charset=utf-8"));
+            resp.headers_mut().insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("text/plain; charset=utf-8"),
+            );
             resp
         }
     }
@@ -143,8 +153,10 @@ fn embedded(path: &str) -> Option<Response> {
 fn not_found() -> Response {
     let mut resp = Response::new(Body::from("not found"));
     *resp.status_mut() = StatusCode::NOT_FOUND;
-    resp.headers_mut()
-        .insert(header::CONTENT_TYPE, HeaderValue::from_static("text/plain; charset=utf-8"));
+    resp.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/plain; charset=utf-8"),
+    );
     resp
 }
 
@@ -171,7 +183,10 @@ mod tests {
     #[test]
     fn index_is_embedded() {
         // Guards against the web bundle going missing from the build.
-        assert!(Assets::get("index.html").is_some(), "web/dist/index.html must be built");
+        assert!(
+            Assets::get("index.html").is_some(),
+            "web/dist/index.html must be built"
+        );
     }
 
     #[test]

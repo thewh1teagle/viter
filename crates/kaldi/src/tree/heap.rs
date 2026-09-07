@@ -12,7 +12,6 @@
 //! Kaldi's min-heaps (`std::greater<...>`) are expressed here by wrapping keys
 //! in `std::cmp::Reverse`.
 
-
 /// Max-heap over `T: Ord`, replicating libstdc++ `push_heap`/`pop_heap` so that
 /// the pop order among equal-comparing elements matches Kaldi exactly.
 /// (Kaldi's min-heaps are expressed by wrapping keys in `std::cmp::Reverse`.)
@@ -105,7 +104,9 @@ impl PartialOrd for OrdF64 {
 }
 impl Ord for OrdF64 {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.0.partial_cmp(&other.0).unwrap_or(std::cmp::Ordering::Equal)
+        self.0
+            .partial_cmp(&other.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
     }
 }
 #[cfg(test)]

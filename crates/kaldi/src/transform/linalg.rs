@@ -9,9 +9,9 @@
 //! that costs a little memory but keeps the code honest and lets faer's
 //! self-adjoint routines be used directly.
 
-use rand::RngExt;
 use faer::linalg::solvers::DenseSolveCore;
 use faer::{Mat, MatRef, Side};
+use rand::RngExt;
 
 /// `ndarray` (row-major, `[r, c]`) -> `faer` `Mat<f64>`.
 pub(crate) fn nd_to_faer(a: &ndarray::Array2<f32>) -> Mat<f64> {
@@ -40,7 +40,9 @@ pub(crate) struct SpMat {
 
 impl SpMat {
     pub(crate) fn zeros(dim: usize) -> Self {
-        Self { m: Mat::zeros(dim, dim) }
+        Self {
+            m: Mat::zeros(dim, dim),
+        }
     }
 
     pub(crate) fn dim(&self) -> usize {
@@ -162,7 +164,11 @@ pub(crate) fn cholesky_lower(a: &SpMat) -> Option<Mat<f64>> {
     let l = llt.L();
     let d = a.dim();
     // faer's `L()` view may carry garbage above the diagonal; zero it.
-    Some(Mat::from_fn(d, d, |i, j| if j <= i { l[(i, j)] } else { 0.0 }))
+    Some(Mat::from_fn(
+        d,
+        d,
+        |i, j| if j <= i { l[(i, j)] } else { 0.0 },
+    ))
 }
 
 /// General square-matrix inverse (Kaldi `Matrix::Invert()` without logdet).
@@ -234,10 +240,9 @@ pub(crate) fn log_abs_det(a: MatRef<'_, f64>) -> f64 {
 /// Returns `(eigenvalues[dim], eigenvectors as columns [dim, dim])`.
 pub(crate) fn sym_eig_descending(a: &SpMat) -> (Vec<f64>, Mat<f64>) {
     let d = a.dim();
-    let eig = a
-        .m
-        .self_adjoint_eigen(Side::Lower)
-        .expect("self-adjoint eigendecomposition failed");
+    let eig =
+        a.m.self_adjoint_eigen(Side::Lower)
+            .expect("self-adjoint eigendecomposition failed");
     let s = eig.S();
     let u = eig.U();
     let mut order: Vec<usize> = (0..d).collect();
@@ -245,7 +250,9 @@ pub(crate) fn sym_eig_descending(a: &SpMat) -> (Vec<f64>, Mat<f64>) {
     // value descending with a stable tie-break on the original index so the
     // result is deterministic.
     order.sort_by(|&x, &y| {
-        s[y].partial_cmp(&s[x]).unwrap_or(std::cmp::Ordering::Equal).then(x.cmp(&y))
+        s[y].partial_cmp(&s[x])
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(x.cmp(&y))
     });
     let vals: Vec<f64> = order.iter().map(|&k| s[k]).collect();
     let vecs = Mat::from_fn(d, d, |i, j| u[(i, order[j])]);
@@ -262,7 +269,11 @@ pub(crate) fn rand_prune(post: f64, prune_thresh: f64, rng: &mut impl rand::Rng)
     let sign = if post >= 0.0 { 1.0 } else { -1.0 };
     // Kaldi: RandUniform() is in (0, 1); keep with probability |post|/thresh.
     let u: f64 = rng.random::<f64>();
-    if u <= post.abs() / prune_thresh { sign * prune_thresh } else { 0.0 }
+    if u <= post.abs() / prune_thresh {
+        sign * prune_thresh
+    } else {
+        0.0
+    }
 }
 
 #[cfg(test)]
@@ -311,7 +322,9 @@ mod tests {
     fn cholesky_reconstructs() {
         let mut s = SpMat::zeros(4);
         for k in 0..6 {
-            let v: Vec<f64> = (0..4).map(|i| ((i * 7 + k * 3) % 5) as f64 * 0.3 + 0.1).collect();
+            let v: Vec<f64> = (0..4)
+                .map(|i| ((i * 7 + k * 3) % 5) as f64 * 0.3 + 0.1)
+                .collect();
             s.add_vec2(1.0, &v);
         }
         for i in 0..4 {

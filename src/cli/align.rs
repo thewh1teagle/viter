@@ -5,12 +5,14 @@ use std::time::Instant;
 
 use anyhow::Context;
 use clap::Args;
+use owo_colors::OwoColorize;
 use viter_io::{corpus, ctm, textgrid};
 use viter_kaldi::align::AlignOptions;
 use viter_kaldi::model::AcousticModel;
-use owo_colors::OwoColorize;
 
-use super::{CorpusArgs, ensure_parent, field, fmt_duration, fmt_rtf, header, output_path, success, warn};
+use super::{
+    CorpusArgs, ensure_parent, field, fmt_duration, fmt_rtf, header, output_path, success, warn,
+};
 
 #[derive(Args, Debug)]
 pub struct AlignArgs {
@@ -93,7 +95,14 @@ pub fn run(args: AlignArgs) -> anyhow::Result<()> {
     field("phones", model.phones.len().saturating_sub(1));
     field("pdfs", model.tm.num_pdfs());
     field("feature dim", model.feature_dim());
-    field("speaker adapted", if model.am_si.is_some() { "yes (fMLLR)" } else { "no" });
+    field(
+        "speaker adapted",
+        if model.am_si.is_some() {
+            "yes (fMLLR)"
+        } else {
+            "no"
+        },
+    );
 
     // --- corpus -----------------------------------------------------------
     header("Corpus");
@@ -119,7 +128,11 @@ pub fn run(args: AlignArgs) -> anyhow::Result<()> {
         corpus::single(&args.input, &text, &opts, Some(&model.phones))
             .with_context(|| format!("failed to prepare {}", args.input.display()))?
     };
-    anyhow::ensure!(!corpus.utts.is_empty(), "no utterances found in {}", args.input.display());
+    anyhow::ensure!(
+        !corpus.utts.is_empty(),
+        "no utterances found in {}",
+        args.input.display()
+    );
 
     // Re-resolve the corpus phone ids against the model's symbol table.
     corpus::remap(&mut corpus, &model.phones)
@@ -131,7 +144,12 @@ pub fn run(args: AlignArgs) -> anyhow::Result<()> {
     if !corpus.oov_words.is_empty() {
         let types = corpus.oov_words.len();
         let tokens: usize = corpus.oov_words.values().sum();
-        field("OOV words", format!("{types} types / {tokens} tokens").yellow().to_string());
+        field(
+            "OOV words",
+            format!("{types} types / {tokens} tokens")
+                .yellow()
+                .to_string(),
+        );
     }
 
     // --- align ------------------------------------------------------------
@@ -160,8 +178,14 @@ pub fn run(args: AlignArgs) -> anyhow::Result<()> {
         final_non_silence_correction: args.final_non_silence_correction,
         boost_silence: args.boost_silence,
     };
-    let results = viter_train::pipeline::align_corpus_with(&corpus, &model, &device, align_opts.as_ref(), &overrides)
-        .context("alignment failed")?;
+    let results = viter_train::pipeline::align_corpus_with(
+        &corpus,
+        &model,
+        &device,
+        align_opts.as_ref(),
+        &overrides,
+    )
+    .context("alignment failed")?;
     anyhow::ensure!(
         results.len() == corpus.utts.len(),
         "aligner returned {} results for {} utterances",
@@ -191,7 +215,8 @@ pub fn run(args: AlignArgs) -> anyhow::Result<()> {
         let tg = textgrid::from_alignment(&intervals, &model.phones, &utt.words, duration);
         let path = output_path(&args.out, &utt.id, "TextGrid");
         ensure_parent(&path)?;
-        tg.write(&path).with_context(|| format!("failed to write {}", path.display()))?;
+        tg.write(&path)
+            .with_context(|| format!("failed to write {}", path.display()))?;
         written += 1;
         if args.ctm {
             ctm_rows.push((intervals, utt.words.as_slice()));
@@ -218,17 +243,27 @@ pub fn run(args: AlignArgs) -> anyhow::Result<()> {
             println!("      {}", id.yellow());
         }
         if failed.len() > 10 {
-            println!("      {}", format!("... and {} more", failed.len() - 10).dimmed());
+            println!(
+                "      {}",
+                format!("... and {} more", failed.len() - 10).dimmed()
+            );
         }
         warn("failed utterances usually mean a transcript/audio mismatch or too narrow a beam");
     }
-    field("audio", fmt_duration(std::time::Duration::from_secs_f64(audio_seconds)));
+    field(
+        "audio",
+        fmt_duration(std::time::Duration::from_secs_f64(audio_seconds)),
+    );
     field("elapsed", fmt_duration(elapsed));
     field("RTF", fmt_rtf(elapsed, audio_seconds));
     if let Some(rss) = super::peak_rss() {
         field("peak RSS", rss);
     }
-    success(&format!("{} TextGrid(s) in {}", written, args.out.display().bold()));
+    success(&format!(
+        "{} TextGrid(s) in {}",
+        written,
+        args.out.display().bold()
+    ));
     Ok(())
 }
 

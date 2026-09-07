@@ -19,7 +19,10 @@ static LOG: Mutex<Option<std::fs::File>> = Mutex::new(None);
 
 /// Route a copy of all progress output to `path` (appended, no colors).
 pub fn set_log_file(path: &std::path::Path) -> std::io::Result<()> {
-    let f = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+    let f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
     *LOG.lock().unwrap() = Some(f);
     Ok(())
 }
@@ -88,14 +91,24 @@ impl Progress {
             ProgressDrawTarget::stderr()
         });
         let live = multi.add(ProgressBar::hidden());
-        Self { multi, live, quiet, state: Mutex::new(State::default()) }
+        Self {
+            multi,
+            live,
+            quiet,
+            state: Mutex::new(State::default()),
+        }
     }
 
     /// Fully silent: used by `align_corpus` when a caller wants no output, and by tests.
     pub fn hidden() -> Self {
         let multi = MultiProgress::with_draw_target(ProgressDrawTarget::hidden());
         let live = multi.add(ProgressBar::hidden());
-        Self { multi, live, quiet: true, state: Mutex::new(State::default()) }
+        Self {
+            multi,
+            live,
+            quiet: true,
+            state: Mutex::new(State::default()),
+        }
     }
 
     /// Declare the ordered stages for this run with their relative cost, and print
@@ -104,11 +117,18 @@ impl Progress {
     pub fn plan(&self, stages: &[(&str, f64)]) {
         {
             let mut st = self.state.lock().unwrap();
-            st.plan = stages.iter().map(|(s, w)| (s.to_string(), w.max(1e-9))).collect();
+            st.plan = stages
+                .iter()
+                .map(|(s, w)| (s.to_string(), w.max(1e-9)))
+                .collect();
             st.run_started = Some(Instant::now());
             st.done_units = 0.0;
         }
-        let chain = stages.iter().map(|(s, _)| verb(s)).collect::<Vec<_>>().join(" → ");
+        let chain = stages
+            .iter()
+            .map(|(s, _)| verb(s))
+            .collect::<Vec<_>>()
+            .join(" → ");
         self.println(format!(
             "{:>w$} {} stages · {}",
             style("Plan").green().bold(),
@@ -129,7 +149,11 @@ impl Progress {
         }
         let counter = self.counter(name);
         self.state.lock().unwrap().stage_frac = 0.0;
-        log_line(&format!("{:>w$} {counter}{detail}", verb(name), w = VERB_WIDTH));
+        log_line(&format!(
+            "{:>w$} {counter}{detail}",
+            verb(name),
+            w = VERB_WIDTH
+        ));
         if self.quiet {
             eprintln!("{:>w$} {counter}{detail}", verb(name), w = VERB_WIDTH);
         } else {
@@ -171,12 +195,13 @@ impl Progress {
         {
             let elapsed = t0.elapsed().as_secs_f64();
             let left = elapsed * (1.0 - frac) / frac;
-            out.push_str(&format!(" · ~{} left", fmt_duration(Duration::from_secs_f64(left))));
+            out.push_str(&format!(
+                " · ~{} left",
+                fmt_duration(Duration::from_secs_f64(left))
+            ));
         }
         out
     }
-
-
 
     /// A determinate bar with `len` units of work on the live line.
     pub fn bar(&self, msg: impl Into<String>, len: u64) -> Bar {
@@ -188,7 +213,10 @@ impl Progress {
             self.live.set_position(0);
             self.live.set_message(self.live_message(&msg));
         }
-        Bar { pb: self.live.clone(), quiet: self.quiet }
+        Bar {
+            pb: self.live.clone(),
+            quiet: self.quiet,
+        }
     }
 
     /// A bar labelled for one step of one iteration: "iter 12/40 · align".
@@ -204,7 +232,10 @@ impl Progress {
             self.live.set_style(spin_style());
             self.live.set_message(self.live_message(&msg));
         }
-        Bar { pb: self.live.clone(), quiet: self.quiet }
+        Bar {
+            pb: self.live.clone(),
+            quiet: self.quiet,
+        }
     }
 
     /// Live-line text: the sub-step plus the last iteration summary, dimmed, and
@@ -427,7 +458,11 @@ fn fmt_duration(d: Duration) -> String {
     } else if secs < 3600.0 {
         format!("{}m{:02}s", (secs / 60.0) as u64, (secs % 60.0) as u64)
     } else {
-        format!("{}h{:02}m", (secs / 3600.0) as u64, ((secs % 3600.0) / 60.0) as u64)
+        format!(
+            "{}h{:02}m",
+            (secs / 3600.0) as u64,
+            ((secs % 3600.0) / 60.0) as u64
+        )
     }
 }
 

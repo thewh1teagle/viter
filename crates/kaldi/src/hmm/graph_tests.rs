@@ -195,7 +195,9 @@ fn final_corrections_applied() {
                 .flat_map(|st| st.arcs.iter())
                 .find(|a| a.next == s && a.tid != 0)
                 .map(|a| tm.transition_id_to_transition_state(a.tid));
-            let adj = ts.map_or(0.0, |t| -opts.self_loop_scale * tm.get_non_self_loop_log_prob(t));
+            let adj = ts.map_or(0.0, |t| {
+                -opts.self_loop_scale * tm.get_non_self_loop_log_prob(t)
+            });
             c - adj
         })
         .collect();
@@ -271,7 +273,6 @@ fn forward_arc_cost_matches_add_transition_probs() {
         }
     }
 }
-
 
 /// The silence branch after a word costs `-ln(silence_after_prob)` and the direct branch
 /// `-ln(1 - silence_after_prob)`, taken from the pronunciation rather than the global default

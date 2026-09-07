@@ -39,11 +39,13 @@ pub enum ModelError {
     BadMagic { path: String, found: [u8; 4] },
 
     #[error("{path} is truncated: {len} bytes, need at least {need}")]
-    Truncated { path: String, len: usize, need: usize },
+    Truncated {
+        path: String,
+        len: usize,
+        need: usize,
+    },
 
-    #[error(
-        "{path} has format version {found}, but this build reads version {expected}"
-    )]
+    #[error("{path} has format version {found}, but this build reads version {expected}")]
     VersionMismatch {
         path: String,
         found: u32,
@@ -205,7 +207,14 @@ mod tests {
     #[test]
     fn short_input_is_truncated_error() {
         let err = AcousticModel::from_bytes(b"CRA", "x.viter").unwrap_err();
-        assert!(matches!(err, ModelError::Truncated { len: 3, need: 8, .. }));
+        assert!(matches!(
+            err,
+            ModelError::Truncated {
+                len: 3,
+                need: 8,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -228,7 +237,9 @@ mod tests {
         bytes.extend_from_slice(&[0xff; 16]);
         let err = AcousticModel::from_bytes(&bytes, "x.viter").unwrap_err();
         match err {
-            ModelError::VersionMismatch { found, expected, .. } => {
+            ModelError::VersionMismatch {
+                found, expected, ..
+            } => {
                 assert_eq!(found, 99);
                 assert_eq!(expected, FORMAT_VERSION);
             }

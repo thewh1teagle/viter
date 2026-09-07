@@ -27,7 +27,6 @@ impl Default for TreeClusterOptions {
     }
 }
 
-
 struct TreeNode {
     is_leaf: bool,
     index: usize,
@@ -71,9 +70,7 @@ pub fn tree_cluster(
         is_leaf: true,
         index: 0,
         parent: None,
-        node_total: sum_clusterable(
-            &points.iter().map(|p| Some(p.clone())).collect::<Vec<_>>(),
-        ),
+        node_total: sum_clusterable(&points.iter().map(|p| Some(p.clone())).collect::<Vec<_>>()),
         points: points.to_vec(),
         point_indices: (0..points.len()).collect(),
         best_split: 0.0,
@@ -210,8 +207,7 @@ fn find_best_split(
         return;
     }
     let points = std::mem::take(&mut nodes[node_id].points);
-    let (impr, clusters, assignments) =
-        cluster_kmeans(&points, cfg.branch_factor, &cfg.kmeans_cfg);
+    let (impr, clusters, assignments) = cluster_kmeans(&points, cfg.branch_factor, &cfg.kmeans_cfg);
     let n = &mut nodes[node_id];
     n.points = points;
     n.clusters = clusters;
@@ -237,8 +233,7 @@ mod tests {
     fn builds_a_binary_tree() {
         let pts = vec![point(0.0), point(0.2), point(20.0), point(20.2)];
         let cfg = TreeClusterOptions::default();
-        let (_, clusters, assignments, clust_assignments, num_leaves) =
-            tree_cluster(&pts, 4, &cfg);
+        let (_, clusters, assignments, clust_assignments, num_leaves) = tree_cluster(&pts, 4, &cfg);
         assert!(num_leaves >= 2);
         assert_eq!(clusters.len(), clust_assignments.len());
         assert_eq!(assignments.len(), 4);
@@ -275,8 +270,7 @@ mod tests {
     #[test]
     fn empty_input() {
         let cfg = TreeClusterOptions::default();
-        let (_, clusters, assignments, clust_assignments, num_leaves) =
-            tree_cluster(&[], 4, &cfg);
+        let (_, clusters, assignments, clust_assignments, num_leaves) = tree_cluster(&[], 4, &cfg);
         assert_eq!(num_leaves, 0);
         assert!(clusters.is_empty() && assignments.is_empty() && clust_assignments.is_empty());
     }

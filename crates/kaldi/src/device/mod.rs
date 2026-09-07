@@ -138,7 +138,11 @@ impl Device {
             Backend::Cpu => cpu::score_cpu(feats, &packed.rows, &packed.offsets, pdfs),
             Backend::Gpu(ctx) => {
                 let expanded = cpu::expand_feats(feats);
-                let job = gpu::ScoreJob { expanded: &expanded, frames: feats.nrows(), sel: pdfs };
+                let job = gpu::ScoreJob {
+                    expanded: &expanded,
+                    frames: feats.nrows(),
+                    sel: pdfs,
+                };
                 ctx.score_jobs(&[job], am.version(), &packed.rows, &packed.offsets)
                     .pop()
                     .expect("one job in, one matrix out")
@@ -199,12 +203,17 @@ impl Device {
             }
             Backend::Gpu(ctx) => {
                 use rayon::prelude::*;
-                let expanded: Vec<Vec<f32>> = feats.par_iter().map(|f| cpu::expand_feats(f)).collect();
+                let expanded: Vec<Vec<f32>> =
+                    feats.par_iter().map(|f| cpu::expand_feats(f)).collect();
                 let jobs: Vec<gpu::ScoreJob<'_>> = feats
                     .iter()
                     .zip(expanded.iter())
                     .zip(sels.iter())
-                    .map(|((f, e), sel)| gpu::ScoreJob { expanded: e, frames: f.nrows(), sel })
+                    .map(|((f, e), sel)| gpu::ScoreJob {
+                        expanded: e,
+                        frames: f.nrows(),
+                        sel,
+                    })
                     .collect();
                 ctx.score_jobs(&jobs, am.version(), &packed.rows, &packed.offsets)
             }

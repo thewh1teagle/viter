@@ -52,15 +52,9 @@ pub use cluster_map::{
     cluster_event_map_restricted_by_map, cluster_event_map_to_n_clusters_restricted_by_map,
     get_stub_map, map_event_map_leaves, renumber_event_map, share_event_map_leaves,
 };
-pub use stats::{
-    AllKeysType, BuildTreeStats, convert_stats, filter_stats_by_key, find_all_keys,
-    objf_given_map, possible_values, split_stats_by_key, split_stats_by_map, sum_normalizer,
-    sum_objf, sum_stats, sum_stats_vec,
-};
-pub use tree_cluster::{TreeClusterOptions, tree_cluster};
 pub use clusterable::{
-    GaussClusterable, add_to_clusters, add_to_clusters_optimized, ensure_not_null,
-    sum_clusterable, sum_clusterable_normalizer, sum_clusterable_objf,
+    GaussClusterable, add_to_clusters, add_to_clusters_optimized, ensure_not_null, sum_clusterable,
+    sum_clusterable_normalizer, sum_clusterable_objf,
 };
 pub use event_map::{
     EventAnswer, EventKey, EventMap, EventType, EventValue, K_PDF_CLASS, check_event,
@@ -70,6 +64,12 @@ pub use questions::{
     Questions, QuestionsForKey, automatically_obtain_questions, kmeans_cluster_phones,
     make_questions, make_questions_with, mfa_roots, mfa_roots_with, read_roots, write_roots,
 };
+pub use stats::{
+    AllKeysType, BuildTreeStats, convert_stats, filter_stats_by_key, find_all_keys, objf_given_map,
+    possible_values, split_stats_by_key, split_stats_by_map, sum_normalizer, sum_objf, sum_stats,
+    sum_stats_vec,
+};
+pub use tree_cluster::{TreeClusterOptions, tree_cluster};
 
 #[cfg(test)]
 mod tests {
@@ -83,12 +83,7 @@ mod tests {
         // Phones: 1 = silence (ci), 10, 11 = real phones.
         let mut stats: BuildTreeStats = Vec::new();
         let mut push = |left: i32, centre: i32, right: i32, pc: i32, x: f32| {
-            let mut e: EventType = vec![
-                (K_PDF_CLASS, pc),
-                (0, left),
-                (1, centre),
-                (2, right),
-            ];
+            let mut e: EventType = vec![(K_PDF_CLASS, pc), (0, left), (1, centre), (2, right)];
             e.sort_by_key(|p| p.0);
             let mut c = GaussClusterable::new(2, 0.01);
             c.add_stats(&[x, x], 60.0);
@@ -142,8 +137,7 @@ mod tests {
         let mut stats: BuildTreeStats = Vec::new();
         for left in 10..20i32 {
             for pc in 0..3 {
-                let mut e: EventType =
-                    vec![(K_PDF_CLASS, pc), (0, left), (1, 10), (2, 10)];
+                let mut e: EventType = vec![(K_PDF_CLASS, pc), (0, left), (1, 10), (2, 10)];
                 e.sort_by_key(|p| p.0);
                 let mut c = GaussClusterable::new(1, 0.01);
                 let x = (left as f32) * 5.0 + pc as f32;
@@ -152,8 +146,10 @@ mod tests {
                 stats.push((e, c));
             }
         }
-        let questions: Vec<Vec<PhoneId>> =
-            (10..20u32).map(|p| vec![p]).chain([(10..20u32).collect()]).collect();
+        let questions: Vec<Vec<PhoneId>> = (10..20u32)
+            .map(|p| vec![p])
+            .chain([(10..20u32).collect()])
+            .collect();
         let qopts = make_questions(&questions, 3);
         let mut phone2num = vec![0usize; 21];
         for p in 10..20 {
@@ -172,7 +168,11 @@ mod tests {
             1,
             true,
         );
-        assert_eq!(num_leaves % 8, 0, "round_num_leaves should give a multiple of 8");
+        assert_eq!(
+            num_leaves % 8,
+            0,
+            "round_num_leaves should give a multiple of 8"
+        );
         assert!(num_leaves > 0);
         for (e, _) in &stats {
             assert!(tree.map(e).is_some());
@@ -198,12 +198,7 @@ mod tests {
             let phone_off = if centre % 10 == 0 { 0.0f32 } else { 1.0 };
             for pc in 0..NUM_PDF_CLASSES as i32 {
                 for &left in &PHONES {
-                    let mut e: EventType = vec![
-                        (K_PDF_CLASS, pc),
-                        (0, left),
-                        (1, centre),
-                        (2, 10),
-                    ];
+                    let mut e: EventType = vec![(K_PDF_CLASS, pc), (0, left), (1, centre), (2, 10)];
                     e.sort_by_key(|p| p.0);
                     let x = group_base + phone_off + 10.0 * pc as f32;
                     let mut c = GaussClusterable::new(2, 0.01);
@@ -215,17 +210,21 @@ mod tests {
         }
 
         // Each phone is its own root/phone-set, as MFA writes them.
-        let phone_sets: Vec<Vec<PhoneId>> =
-            PHONES.iter().map(|&p| vec![p as PhoneId]).collect();
+        let phone_sets: Vec<Vec<PhoneId>> = PHONES.iter().map(|&p| vec![p as PhoneId]).collect();
 
         // Automatic questions must recover the two groups.
         let auto_q = automatically_obtain_questions(&stats, &phone_sets, &[1], 1);
-        assert!(auto_q.contains(&vec![10, 11]), "group A missing: {auto_q:?}");
-        assert!(auto_q.contains(&vec![20, 21]), "group B missing: {auto_q:?}");
+        assert!(
+            auto_q.contains(&vec![10, 11]),
+            "group A missing: {auto_q:?}"
+        );
+        assert!(
+            auto_q.contains(&vec![20, 21]),
+            "group B missing: {auto_q:?}"
+        );
 
         let qopts = make_questions(&auto_q, 3);
-        let (roots, share_roots, do_split) =
-            mfa_roots(&[vec![10, 11], vec![20, 21]], &[]);
+        let (roots, share_roots, do_split) = mfa_roots(&[vec![10, 11], vec![20, 21]], &[]);
 
         let mut phone2num = vec![0usize; 22];
         for &p in &PHONES {
@@ -246,7 +245,10 @@ mod tests {
             false,
         );
 
-        assert!(num_leaves <= MAX_LEAVES, "num_leaves {num_leaves} > {MAX_LEAVES}");
+        assert!(
+            num_leaves <= MAX_LEAVES,
+            "num_leaves {num_leaves} > {MAX_LEAVES}"
+        );
         assert!(
             num_leaves >= NUM_PDF_CLASSES,
             "num_leaves {num_leaves} < {NUM_PDF_CLASSES} pdf-classes"
@@ -256,16 +258,9 @@ mod tests {
         for &centre in &PHONES {
             for pc in 0..NUM_PDF_CLASSES as i32 {
                 for &left in &PHONES {
-                    let mut e: EventType = vec![
-                        (K_PDF_CLASS, pc),
-                        (0, left),
-                        (1, centre),
-                        (2, 10),
-                    ];
+                    let mut e: EventType = vec![(K_PDF_CLASS, pc), (0, left), (1, centre), (2, 10)];
                     e.sort_by_key(|p| p.0);
-                    let pdf = tree
-                        .map(&e)
-                        .unwrap_or_else(|| panic!("no pdf for {e:?}"));
+                    let pdf = tree.map(&e).unwrap_or_else(|| panic!("no pdf for {e:?}"));
                     assert!((pdf as usize) < num_leaves);
                 }
             }

@@ -12,14 +12,12 @@
 //! the adapted passes.
 
 use anyhow::{Context, Result};
-use viter_kaldi::feat::{
-    self, CmvnStats, DeltaOptions, MfccComputer, MfccOptions,
-};
-use viter_kaldi::transform::Mat;
-use viter_kaldi::types::Feats;
-use viter_io::corpus::Corpus;
 use rayon::prelude::*;
 use std::collections::HashMap;
+use viter_io::corpus::Corpus;
+use viter_kaldi::feat::{self, CmvnStats, DeltaOptions, MfccComputer, MfccOptions};
+use viter_kaldi::transform::Mat;
+use viter_kaldi::types::Feats;
 
 use super::progress::Progress;
 
@@ -119,7 +117,10 @@ impl FeatureStore {
 
         // Per-speaker CMVN stats, then apply in place. MFA computes CMVN over all of a
         // speaker's utterances and applies with norm_vars = False.
-        let dim = base.first().map(|f| f.ncols()).unwrap_or(mfcc.num_ceps as usize);
+        let dim = base
+            .first()
+            .map(|f| f.ncols())
+            .unwrap_or(mfcc.num_ceps as usize);
         let mut cmvn = vec![CmvnStats::new(dim); num_speakers];
         for (i, f) in base.iter().enumerate() {
             cmvn[utt_speaker[i]].accumulate(f);

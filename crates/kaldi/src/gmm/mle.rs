@@ -109,7 +109,11 @@ pub fn mle_diag_gmm_update_detailed(
         gmm.num_gauss(),
         "mle_diag_gmm_update: component count mismatch"
     );
-    assert_eq!(acc.dim(), gmm.dim(), "mle_diag_gmm_update: dimension mismatch");
+    assert_eq!(
+        acc.dim(),
+        gmm.dim(),
+        "mle_diag_gmm_update: dimension mismatch"
+    );
 
     let num_gauss = gmm.num_gauss();
     let dim = gmm.dim();
@@ -234,11 +238,7 @@ pub fn mle_diag_gmm_update_detailed(
     }
 
     if gauss_floored > 0 {
-        tracing::debug!(
-            elements_floored,
-            gauss_floored,
-            "variance elements floored"
-        );
+        tracing::debug!(elements_floored, gauss_floored, "variance elements floored");
     }
 
     UpdateStats {
@@ -271,12 +271,7 @@ pub fn mle_am_diag_gmm_update(
     let mut tot_gauss_removed = 0usize;
 
     for i in 0..acc.num_accs() {
-        let s = mle_diag_gmm_update_detailed(
-            opts,
-            &acc.accs[i],
-            flags,
-            am.pdf_mut(i as PdfId),
-        );
+        let s = mle_diag_gmm_update_detailed(opts, &acc.accs[i], flags, am.pdf_mut(i as PdfId));
         tot_obj_change += s.objf_change;
         tot_count += s.count;
         tot_elems_floored += s.floored_elements;
@@ -318,9 +313,9 @@ pub fn ismooth_stats_am_diag_gmm_from_model(am: &AmDiagGmm, tau: f64, acc: &mut 
 mod tests {
     use super::*;
     use ndarray::array;
+    use rand::RngExt;
     use rand_xoshiro::Xoshiro256PlusPlus;
     use rand_xoshiro::rand_core::SeedableRng;
-    use rand::RngExt;
 
     /// A two-component 1-D GMM, deliberately wrong, to be re-estimated.
     fn start_gmm() -> DiagGmm {
@@ -376,7 +371,10 @@ mod tests {
         }
         let (objf_change, count) = mle_diag_gmm_update(&opts(), &acc, GmmFlags::ALL, &mut g);
         assert!(count > 1999.0 && count < 2001.0);
-        assert!(objf_change > 0.0, "objf change {objf_change} should be positive");
+        assert!(
+            objf_change > 0.0,
+            "objf change {objf_change} should be positive"
+        );
         // Components have moved towards the two real modes.
         let mut ms = [g.means()[[0, 0]], g.means()[[1, 0]]];
         ms.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -476,7 +474,12 @@ mod tests {
             let x = 5.0 + 2.0 * super::super::rand_gauss(&mut rng);
             acc.accumulate_from_posteriors(&[x], &[1.0]);
         }
-        mle_diag_gmm_update(&opts(), &acc, GmmFlags::VARIANCES | GmmFlags::WEIGHTS, &mut g);
+        mle_diag_gmm_update(
+            &opts(),
+            &acc,
+            GmmFlags::VARIANCES | GmmFlags::WEIGHTS,
+            &mut g,
+        );
         // Mean is untouched...
         assert!(g.means()[[0, 0]].abs() < 1e-5);
         // ...and the variance absorbs the mean offset: about 4 + 25.
@@ -504,8 +507,7 @@ mod tests {
         for p in 0..3u32 {
             let means = am.pdf(p).means();
             let centre = p as f32 * 6.0;
-            let close = (0..am.pdf(p).num_gauss())
-                .any(|g| (means[[g, 0]] - centre).abs() < 1.0);
+            let close = (0..am.pdf(p).num_gauss()).any(|g| (means[[g, 0]] - centre).abs() < 1.0);
             assert!(close, "pdf {p} did not move to {centre}");
         }
         // The model version was bumped by the update.

@@ -7,7 +7,7 @@ pub mod equal;
 pub mod viterbi;
 
 pub use equal::equal_align;
-pub use viterbi::{align, graph_pdfs, AlignOptions};
+pub use viterbi::{AlignOptions, align, graph_pdfs};
 
 use crate::types::{Alignment, TransitionId};
 
@@ -26,7 +26,10 @@ pub enum AlignError {
     #[error("utterance has too few frames ({frames}) to align")]
     TooShort { frames: usize },
     #[error("scores matrix has {cols} columns but the graph needs a column for pdf {pdf}")]
-    MissingPdf { cols: usize, pdf: crate::types::PdfId },
+    MissingPdf {
+        cols: usize,
+        pdf: crate::types::PdfId,
+    },
 }
 
 #[cfg(test)]

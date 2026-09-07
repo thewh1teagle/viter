@@ -132,7 +132,14 @@ fn scan_dir(root: &Path) -> anyhow::Result<(HashMap<String, Entry>, Vec<String>)
             duration,
             id: id.clone(),
         };
-        entries.insert(id, Entry { meta, audio_abs, textgrid_abs });
+        entries.insert(
+            id,
+            Entry {
+                meta,
+                audio_abs,
+                textgrid_abs,
+            },
+        );
     }
     let mut order: Vec<String> = entries.keys().cloned().collect();
     order.sort();
@@ -170,7 +177,10 @@ fn walk(
         };
         if ty.is_dir() {
             // Skip dotted directories (.git, .cache) — never corpus content.
-            if path.file_name().is_some_and(|n| n.to_string_lossy().starts_with('.')) {
+            if path
+                .file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with('.'))
+            {
                 continue;
             }
             walk(root, &path, audio, grids)?;
@@ -179,7 +189,9 @@ fn walk(
         let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
             continue;
         };
-        let Some(id) = id_for(root, &path) else { continue };
+        let Some(id) = id_for(root, &path) else {
+            continue;
+        };
         if ext.eq_ignore_ascii_case("textgrid") {
             grids.insert(id, path);
         } else if let Some(pref) = AUDIO_EXTS.iter().position(|a| ext.eq_ignore_ascii_case(a)) {
@@ -237,8 +249,12 @@ fn textgrid_duration(path: &Path) -> Option<f64> {
 pub async fn list_files(State(st): State<AppState>) -> Response {
     st.refresh_if_stale();
     let idx = st.index.lock().expect("index poisoned");
-    let files: Vec<&FileEntry> =
-        idx.order.iter().filter_map(|id| idx.entries.get(id)).map(|e| &e.meta).collect();
+    let files: Vec<&FileEntry> = idx
+        .order
+        .iter()
+        .filter_map(|id| idx.entries.get(id))
+        .map(|e| &e.meta)
+        .collect();
     json_ok(&files)
 }
 
@@ -296,7 +312,11 @@ pub async fn get_textgrid(State(st): State<AppState>, AxPath(id): AxPath<String>
                 intervals: t
                     .intervals
                     .iter()
-                    .map(|i| TgInterval { xmin: i.xmin, xmax: i.xmax, text: &i.text })
+                    .map(|i| TgInterval {
+                        xmin: i.xmin,
+                        xmax: i.xmax,
+                        text: &i.text,
+                    })
                     .collect(),
             })
             .collect(),
@@ -321,7 +341,9 @@ pub async fn get_audio(
         return err(StatusCode::NOT_FOUND, "no such file");
     };
     let path = entry.audio_abs;
-    let mime = mime_guess::from_path(&path).first_or_octet_stream().to_string();
+    let mime = mime_guess::from_path(&path)
+        .first_or_octet_stream()
+        .to_string();
 
     let len = match std::fs::metadata(&path) {
         Ok(m) => m.len(),
@@ -331,7 +353,10 @@ pub async fn get_audio(
         }
     };
 
-    let range = headers.get(header::RANGE).and_then(|v| v.to_str().ok()).and_then(|v| parse_range(v, len));
+    let range = headers
+        .get(header::RANGE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| parse_range(v, len));
 
     match range {
         Some(Err(())) => {
@@ -355,7 +380,11 @@ pub async fn get_audio(
             *resp.status_mut() = StatusCode::PARTIAL_CONTENT;
             let h = resp.headers_mut();
             insert_str(h, header::CONTENT_TYPE, &mime);
-            insert_str(h, header::CONTENT_RANGE, &format!("bytes {start}-{end}/{len}"));
+            insert_str(
+                h,
+                header::CONTENT_RANGE,
+                &format!("bytes {start}-{end}/{len}"),
+            );
             insert_str(h, header::CONTENT_LENGTH, &count.to_string());
             insert_str(h, header::ACCEPT_RANGES, "bytes");
             resp
@@ -406,10 +435,18 @@ fn parse_range(raw: &str, len: u64) -> Option<Result<(u64, u64), ()>> {
         if start >= len {
             return Some(Err(()));
         }
-        let end = if b.is_empty() { len - 1 } else { b.parse::<u64>().ok()?.min(len - 1) };
+        let end = if b.is_empty() {
+            len - 1
+        } else {
+            b.parse::<u64>().ok()?.min(len - 1)
+        };
         (start, end)
     };
-    if start > end { Some(Err(())) } else { Some(Ok((start, end))) }
+    if start > end {
+        Some(Err(()))
+    } else {
+        Some(Ok((start, end)))
+    }
 }
 
 /// Read `count` bytes starting at `start` without loading the whole file.
@@ -448,7 +485,12 @@ pub async fn get_peaks(
 ) -> Response {
     let px = q.px.unwrap_or(2000).clamp(1, 20_000);
 
-    if let Some(hit) = st.peaks.lock().expect("peaks poisoned").get(&(id.clone(), px)) {
+    if let Some(hit) = st
+        .peaks
+        .lock()
+        .expect("peaks poisoned")
+        .get(&(id.clone(), px))
+    {
         return json_ok(hit.as_ref());
     }
     let Some(entry) = st.entry(&id) else {
@@ -469,7 +511,10 @@ pub async fn get_peaks(
             return err(StatusCode::INTERNAL_SERVER_ERROR, "peak computation failed");
         }
     };
-    st.peaks.lock().expect("peaks poisoned").insert((id, px), Arc::clone(&peaks));
+    st.peaks
+        .lock()
+        .expect("peaks poisoned")
+        .insert((id, px), Arc::clone(&peaks));
     json_ok(peaks.as_ref())
 }
 
@@ -477,13 +522,21 @@ pub async fn get_peaks(
 fn compute_peaks(path: &Path, px: u32) -> anyhow::Result<PeaksResponse> {
     let audio = viter_kaldi::audio::read(path)?;
     let n = audio.samples.len();
-    let duration = if audio.sample_rate == 0 { 0.0 } else { n as f64 / audio.sample_rate as f64 };
+    let duration = if audio.sample_rate == 0 {
+        0.0
+    } else {
+        n as f64 / audio.sample_rate as f64
+    };
     let cols = px as usize;
     let mut peaks = Vec::with_capacity(cols * 2);
 
     if n == 0 {
         peaks.resize(cols * 2, 0.0);
-        return Ok(PeaksResponse { sample_rate: audio.sample_rate, duration, peaks });
+        return Ok(PeaksResponse {
+            sample_rate: audio.sample_rate,
+            duration,
+            peaks,
+        });
     }
     for c in 0..cols {
         // Column boundaries by exact rational split, so no sample is dropped or double-counted.
@@ -507,7 +560,11 @@ fn compute_peaks(path: &Path, px: u32) -> anyhow::Result<PeaksResponse> {
         peaks.push(lo);
         peaks.push(hi);
     }
-    Ok(PeaksResponse { sample_rate: audio.sample_rate, duration, peaks })
+    Ok(PeaksResponse {
+        sample_rate: audio.sample_rate,
+        duration,
+        peaks,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -525,8 +582,10 @@ fn json_ok<T: Serialize>(v: &T) -> Response {
     match serde_json::to_vec(v) {
         Ok(body) => {
             let mut resp = Response::new(Body::from(body));
-            resp.headers_mut()
-                .insert(header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
+            resp.headers_mut().insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            );
             resp
         }
         Err(e) => {
@@ -540,7 +599,10 @@ fn json_ok<T: Serialize>(v: &T) -> Response {
 fn err(status: StatusCode, msg: &str) -> Response {
     let body = serde_json::json!({ "error": msg }).to_string();
     let mut resp = (status, body).into_response();
-    resp.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    resp.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
     resp
 }
 
@@ -584,7 +646,13 @@ mod tests {
     fn ids_are_relative_paths_without_extension() {
         let root = Path::new("/corpus");
         assert_eq!(id_for(root, Path::new("/corpus/a.wav")).unwrap(), "a");
-        assert_eq!(id_for(root, Path::new("/corpus/spk1/utt_003.TextGrid")).unwrap(), "spk1/utt_003");
-        assert_eq!(id_for(root, Path::new("/corpus/a/b/c.flac")).unwrap(), "a/b/c");
+        assert_eq!(
+            id_for(root, Path::new("/corpus/spk1/utt_003.TextGrid")).unwrap(),
+            "spk1/utt_003"
+        );
+        assert_eq!(
+            id_for(root, Path::new("/corpus/a/b/c.flac")).unwrap(),
+            "a/b/c"
+        );
     }
 }

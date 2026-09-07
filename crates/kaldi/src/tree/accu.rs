@@ -3,9 +3,9 @@
 //! From an alignment (transition ids) and its feature matrix, accumulate one
 //! `GaussClusterable` per (context window, pdf-class) event.
 
-use super::stats::BuildTreeStats;
 use super::clusterable::GaussClusterable;
 use super::event_map::{EventKey, EventType, EventValue, K_PDF_CLASS};
+use super::stats::BuildTreeStats;
 use crate::hmm::TransitionModel;
 use crate::types::{Feats, PhoneId, TransitionId};
 use std::collections::HashMap;
@@ -72,7 +72,9 @@ fn split_to_phones(tm: &TransitionModel, tids: &[TransitionId]) -> Option<Vec<Ve
         let starts_new = match cur_phone {
             None => true,
             Some(cp) => {
-                cp != phone || (!self_loop && state <= cur_state) || (self_loop && state != cur_state)
+                cp != phone
+                    || (!self_loop && state <= cur_state)
+                    || (self_loop && state != cur_state)
             }
         };
         if starts_new {
@@ -212,9 +214,18 @@ mod tests {
     #[test]
     fn stats_map_to_vec_is_sorted() {
         let mut m: HashMap<EventType, GaussClusterable> = HashMap::new();
-        m.insert(vec![(K_PDF_CLASS, 1), (1, 9)], GaussClusterable::new(1, 0.01));
-        m.insert(vec![(K_PDF_CLASS, 0), (1, 9)], GaussClusterable::new(1, 0.01));
-        m.insert(vec![(K_PDF_CLASS, 0), (1, 3)], GaussClusterable::new(1, 0.01));
+        m.insert(
+            vec![(K_PDF_CLASS, 1), (1, 9)],
+            GaussClusterable::new(1, 0.01),
+        );
+        m.insert(
+            vec![(K_PDF_CLASS, 0), (1, 9)],
+            GaussClusterable::new(1, 0.01),
+        );
+        m.insert(
+            vec![(K_PDF_CLASS, 0), (1, 3)],
+            GaussClusterable::new(1, 0.01),
+        );
         let v = stats_map_to_vec(m);
         let keys: Vec<EventType> = v.into_iter().map(|(k, _)| k).collect();
         assert_eq!(

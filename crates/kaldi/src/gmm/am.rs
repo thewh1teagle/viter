@@ -263,10 +263,7 @@ impl AmDiagGmm {
     /// Shared handle to the cached packed matrix, avoiding a copy of what can be a
     /// very large matrix. The device layer keeps this alive across calls.
     pub fn packed_arc(&self) -> Arc<PackedGmm> {
-        let mut guard = self
-            .packed_cache
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut guard = self.packed_cache.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((v, ref cached)) = *guard
             && v == self.version
         {

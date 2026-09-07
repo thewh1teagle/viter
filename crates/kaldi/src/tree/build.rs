@@ -221,7 +221,9 @@ impl DecisionTreeSplitter {
         self.yes = Some(Box::new(DecisionTreeSplitter::new(
             yes_leaf, yes_stats, q_opts,
         )));
-        self.no = Some(Box::new(DecisionTreeSplitter::new(no_leaf, no_stats, q_opts)));
+        self.no = Some(Box::new(DecisionTreeSplitter::new(
+            no_leaf, no_stats, q_opts,
+        )));
         self.best_split_impr = self
             .yes
             .as_ref()
@@ -290,7 +292,6 @@ pub fn split_decision_tree(
     }
 }
 
-
 // ---------------------------------------------------------------------------
 // BuildTree (build-tree.cc:136)
 // ---------------------------------------------------------------------------
@@ -343,8 +344,7 @@ pub fn build_tree(
     nonsplit_phones.sort_unstable();
     assert!(nonsplit_phones.windows(2).all(|w| w[0] < w[1]));
 
-    let filtered_stats =
-        filter_stats_by_key(stats, p as EventKey, &nonsplit_phones, false);
+    let filtered_stats = filter_stats_by_key(stats, p as EventKey, &nonsplit_phones, false);
 
     // Kaldi's SplitDecisionTree asserts its SplitStatsByMap output is non-empty,
     // which only holds when at least one root is splittable and has stats. If
@@ -370,12 +370,8 @@ pub fn build_tree(
     }
 
     if cluster_thresh != 0.0 {
-        let (tree_clustered, num_removed) = cluster_event_map_restricted_by_map(
-            &tree_split,
-            stats,
-            cluster_thresh,
-            &tree_stub,
-        );
+        let (tree_clustered, num_removed) =
+            cluster_event_map_restricted_by_map(&tree_split, stats, cluster_thresh, &tree_stub);
         let (tree_renumbered, num_leaves_out) = if round_num_leaves {
             let num_leaves_required = ((num_leaves - num_removed) / 8) * 8;
             let (tree_rounded, _num_removed_in_rounding) =
@@ -445,12 +441,7 @@ mod tests {
         let mut stats = Vec::new();
         for (li, &left) in [1i32, 2].iter().enumerate() {
             for pc in 0..3 {
-                stats.push(stat(
-                    [left, 3, 4],
-                    pc,
-                    10.0 * li as f32 + pc as f32,
-                    100.0,
-                ));
+                stats.push(stat([left, 3, 4], pc, 10.0 * li as f32 + pc as f32, 100.0));
             }
         }
         stats
@@ -518,5 +509,4 @@ mod tests {
         );
         assert_eq!(num_leaves, 1);
     }
-
 }

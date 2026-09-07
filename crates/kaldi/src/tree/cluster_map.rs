@@ -43,8 +43,7 @@ pub fn cluster_event_map_get_mapping(
         return 0;
     }
 
-    let (_change, _clusters, assignments) =
-        cluster_bottom_up(&summed_stats_contiguous, thresh, 0);
+    let (_change, _clusters, assignments) = cluster_bottom_up(&summed_stats_contiguous, thresh, 0);
     assert_eq!(assignments.len(), summed_stats_contiguous.len());
     let num_clust = assignments.iter().max().unwrap() + 1;
     let num_combined = summed_stats_contiguous.len() as i32 - num_clust as i32;
@@ -58,18 +57,17 @@ pub fn cluster_event_map_get_mapping(
         // Map to an index that already exists in this part of the tree, so we
         // do not collide with leaf ids used elsewhere.
         let new_index = indexes[assignments[i]];
-        assert!(mapping[index].is_none(), "overlapping index sets in cluster");
+        assert!(
+            mapping[index].is_none(),
+            "overlapping index sets in cluster"
+        );
         mapping[index] = Some(EventMap::Constant(new_index as crate::types::PdfId));
     }
     num_combined
 }
 
 /// Kaldi `ClusterEventMap`.
-pub fn cluster_event_map(
-    e_in: &EventMap,
-    stats: &BuildTreeStats,
-    thresh: f64,
-) -> (EventMap, i32) {
+pub fn cluster_event_map(e_in: &EventMap, stats: &BuildTreeStats, thresh: f64) -> (EventMap, i32) {
     let mut mapping = Vec::new();
     let num_removed = cluster_event_map_get_mapping(e_in, stats, thresh, &mut mapping);
     (e_in.copy_with(&mapping), num_removed)
@@ -281,13 +279,22 @@ pub fn get_stub_map(
         let mut all = std::collections::HashSet::new();
         for set in phone_sets {
             assert!(!set.is_empty());
-            assert!(set.windows(2).all(|w| w[0] < w[1]), "phone set not sorted/uniq");
+            assert!(
+                set.windows(2).all(|w| w[0] < w[1]),
+                "phone set not sorted/uniq"
+            );
             for &ph in set {
                 assert!(all.insert(ph), "phone {ph} in more than one root");
             }
         }
     }
-    get_stub_map_inner(p, phone_sets, phone2num_pdf_classes, share_roots, num_leaves_out)
+    get_stub_map_inner(
+        p,
+        phone_sets,
+        phone2num_pdf_classes,
+        share_roots,
+        num_leaves_out,
+    )
 }
 
 fn get_stub_map_inner(
@@ -514,8 +521,7 @@ mod tests {
             leaf_stat(3, 0.0),
             leaf_stat(4, 0.0),
         ];
-        let (clustered, _) =
-            cluster_event_map_restricted_by_map(&m, &stats, 1.0e10, &restrict);
+        let (clustered, _) = cluster_event_map_restricted_by_map(&m, &stats, 1.0e10, &restrict);
         let (renumbered, n) = renumber_event_map(&clustered);
         assert_eq!(n, 2, "one leaf per root, no cross-root merging");
         assert_ne!(

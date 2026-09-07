@@ -28,7 +28,10 @@ impl DiagGmm {
     /// `SetWeights`; `inv_vars` starts at 1 exactly as Kaldi does so that a later
     /// `set_means_and_vars` behaves.
     pub fn new(num_gauss: usize, dim: usize) -> Self {
-        assert!(num_gauss > 0 && dim > 0, "DiagGmm::new needs positive sizes");
+        assert!(
+            num_gauss > 0 && dim > 0,
+            "DiagGmm::new needs positive sizes"
+        );
         let mut g = DiagGmm {
             weights: vec![1.0 / num_gauss as f32; num_gauss],
             means_invvars: Array2::zeros((num_gauss, dim)),
@@ -227,7 +230,10 @@ impl DiagGmm {
             "DiagGmm::split: cannot split from {current} to {target} components"
         );
         if target == current {
-            tracing::warn!(target, "already have the target # of Gaussians; doing nothing");
+            tracing::warn!(
+                target,
+                "already have the target # of Gaussians; doing nothing"
+            );
             return;
         }
 
@@ -320,7 +326,6 @@ impl DiagGmm {
     }
 }
 
-
 impl DiagGmm {
     /// Sum of the weights, used in tests and by weight renormalisation checks.
     pub(crate) fn weight_sum(&self) -> f32 {
@@ -334,7 +339,6 @@ impl DiagGmm {
             .collect()
     }
 }
-
 
 #[cfg(test)]
 #[allow(clippy::excessive_precision)]
@@ -447,7 +451,10 @@ mod tests {
         assert!((g.weight_sum() - before).abs() < 1e-5);
         // Variances are copied unchanged by a split.
         let vars = g.vars();
-        assert!((vars[[0, 0]] - vars[[2, 0]]).abs() < 1e-5 || (vars[[1, 0]] - vars[[2, 0]]).abs() < 1e-5);
+        assert!(
+            (vars[[0, 0]] - vars[[2, 0]]).abs() < 1e-5
+                || (vars[[1, 0]] - vars[[2, 0]]).abs() < 1e-5
+        );
     }
 
     #[test]
