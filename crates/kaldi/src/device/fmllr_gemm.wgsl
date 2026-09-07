@@ -8,10 +8,12 @@
 // which is exactly Kaldi's committed single-frame stats summed over the batch, with
 // the `beta` count coming from `cnt_out` (reduced on the host).
 //
-// Dispatch grid: (ceil(dim1/TILE), ceil(dim1/TILE), dim + 1). Layer `z < dim`
-// computes the `G[z]` tile; layer `z == dim` computes the K tile (its x index is the
-// model-dim row `i`, its y index the column `j`). Each workgroup walks the frames in
-// tiles of TILE_T, staging that tile's two xplus column slices and the one `b`
+// Dispatch grid: (ceil(dim1/TILE), ceil(dim1/TILE), (dim + 1) * chunks). The z
+// index is `layer + chunk * (dim + 1)`: layer `< dim` computes the `G[layer]` tile,
+// layer `== dim` the K tile (its x index is the model-dim row `i`, its y index the
+// column `j`), and chunk `c` covers frames `[c * chunk_frames, (c + 1) * chunk_frames)`
+// writing its partial sums to the `c`-th copy of the outputs, which the host adds in
+// f64. Each workgroup walks its frames in tiles of TILE_T, staging that tile's two xplus column slices and the one `b`
 // column it needs in workgroup memory, so each thread keeps a single f32
 // accumulator and the global traffic per workgroup is O(T * (2*TILE + 1)) instead of
 // O(T * TILE^2).
@@ -23,7 +25,7 @@ struct Params {
     dim: u32,
     dim1: u32,
     xw: u32,       // xplus row stride in floats (dim1 padded to 4)
-    _p0: u32,
+    chunk_frames: u32,
     _p1: u32,
     _p2: u32,
     _p3: u32,
@@ -33,8 +35,8 @@ struct Params {
 @group(0) @binding(1) var<storage, read> xplus: array<f32>;       // [frames, xw]
 @group(0) @binding(2) var<storage, read> a_in: array<f32>;        // [frames, dim]
 @group(0) @binding(3) var<storage, read> b_in: array<f32>;        // [frames, dim]
-@group(0) @binding(4) var<storage, read_write> k_out: array<f32>; // [dim, dim1]
-@group(0) @binding(5) var<storage, read_write> g_out: array<f32>; // [dim, dim1, dim1]
+@group(0) @binding(4) var<storage, read_write> k_out: array<f32>; // [chunks, dim, dim1]
+@group(0) @binding(5) var<storage, read_write> g_out: array<f32>; // [chunks, dim, dim1, dim1]
 
 const TILE: u32 = 8u;
 const TILE_T: u32 = 64u;
@@ -51,10 +53,14 @@ fn fmllr_gemm(
 ) {
     let dim = par.dim;
     let dim1 = par.dim1;
-    let frames = par.frames;
     let xw = par.xw;
     let tid = lid.y * TILE + lid.x;
-    let is_k = wg.z == dim;
+    let chunk = wg.z / (dim + 1u);
+    let layer = wg.z - chunk * (dim + 1u);
+    let is_k = layer == dim;
+    // This chunk's frame range.
+    let t_begin = chunk * par.chunk_frames;
+    let frames = min(par.frames, t_begin + par.chunk_frames);
 
     // Row index: the K layer indexes `a`'s model-dim rows, a G layer indexes xplus.
     let r = wg.x * TILE + lid.x;
@@ -62,10 +68,10 @@ fn fmllr_gemm(
     let r_lim = select(dim1, dim, is_k);
     // For a G layer only the upper triangle is stored.
     let live = r < r_lim && c < dim1 && (is_k || r <= c);
-    let col = select(wg.z, 0u, is_k); // which model-dim column of a/b this layer uses
+    let col = select(layer, 0u, is_k); // which model-dim column of a/b this layer uses
 
     var acc: f32 = 0.0;
-    var t0: u32 = 0u;
+    var t0: u32 = t_begin;
     loop {
         if (t0 >= frames) { break; }
         let n = min(TILE_T, frames - t0);
@@ -110,8 +116,8 @@ fn fmllr_gemm(
         return;
     }
     if (is_k) {
-        k_out[r * dim1 + c] = acc;
+        k_out[(chunk * dim + r) * dim1 + c] = acc;
     } else {
-        g_out[(wg.z * dim1 + r) * dim1 + c] = acc;
+        g_out[((chunk * dim + layer) * dim1 + r) * dim1 + c] = acc;
     }
 }

@@ -9,9 +9,23 @@
 //! that costs a little memory but keeps the code honest and lets faer's
 //! self-adjoint routines be used directly.
 
+use std::sync::Once;
+
 use faer::linalg::solvers::DenseSolveCore;
 use faer::{Mat, MatRef, Side};
 use rand::RngExt;
+
+/// Run faer's solvers single-threaded.
+///
+/// Every matrix here is tiny (the feature dim, ≤ ~120), and faer's high-level
+/// solvers otherwise fan each factorization out over rayon: on a 40×40 inverse
+/// the thread hand-off costs more than the arithmetic, and fMLLR does 1,600 of
+/// them per speaker. The one large product, the CPU scoring matmul, passes its
+/// own `Par` explicitly and is unaffected.
+fn sequential() {
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| faer::set_global_parallelism(faer::Par::Seq));
+}
 
 /// `ndarray` (row-major, `[r, c]`) -> `faer` `Mat<f64>`.
 pub(crate) fn nd_to_faer(a: &ndarray::Array2<f32>) -> Mat<f64> {
@@ -138,6 +152,7 @@ impl SpMat {
     /// LU inverse when the matrix is not positive definite (Kaldi uses an
     /// LDL^T-style inverse that also handles indefinite matrices).
     pub(crate) fn inverted(&self) -> SpMat {
+        sequential();
         let inv = match self.m.llt(Side::Lower) {
             Ok(llt) => llt.inverse(),
             Err(_) => self.m.partial_piv_lu().inverse(),
@@ -160,6 +175,7 @@ impl SpMat {
 /// Returns `None` when the matrix is not positive definite, so the caller can
 /// apply Kaldi's diagonal-smoothing retry.
 pub(crate) fn cholesky_lower(a: &SpMat) -> Option<Mat<f64>> {
+    sequential();
     let llt = a.m.llt(Side::Lower).ok()?;
     let l = llt.L();
     let d = a.dim();
@@ -173,11 +189,13 @@ pub(crate) fn cholesky_lower(a: &SpMat) -> Option<Mat<f64>> {
 
 /// General square-matrix inverse (Kaldi `Matrix::Invert()` without logdet).
 pub(crate) fn invert(a: MatRef<'_, f64>) -> Mat<f64> {
+    sequential();
     a.partial_piv_lu().inverse()
 }
 
 /// Kaldi `Matrix::Invert(&logdet)`: returns `(inverse, log|det|)`.
 pub(crate) fn invert_with_logdet(a: MatRef<'_, f64>) -> (Mat<f64>, f64) {
+    sequential();
     let lu = a.partial_piv_lu();
     let inv = lu.inverse();
     (inv, log_abs_det(a))
@@ -240,6 +258,7 @@ pub(crate) fn log_abs_det(a: MatRef<'_, f64>) -> f64 {
 /// Returns `(eigenvalues[dim], eigenvectors as columns [dim, dim])`.
 pub(crate) fn sym_eig_descending(a: &SpMat) -> (Vec<f64>, Mat<f64>) {
     let d = a.dim();
+    sequential();
     let eig =
         a.m.self_adjoint_eigen(Side::Lower)
             .expect("self-adjoint eigendecomposition failed");

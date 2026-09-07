@@ -82,7 +82,56 @@ fn score_pdfs(
 
     var mx = vec4<f32>(NEG_INF);
     var sum = vec4<f32>(0.0);
-    for (var g: u32 = lo; g < hi; g = g + 1u) {
+    // Four gaussian rows per pass over the tile: each tile load feeds 16 dots
+    // instead of 4, which is what bounds this loop (workgroup-memory bandwidth).
+    var g: u32 = lo;
+    for (; g + 4u <= hi; g = g + 4u) {
+        let b0 = g * w4;
+        let b1 = b0 + w4;
+        let b2 = b1 + w4;
+        let b3 = b2 + w4;
+        var acc0 = vec4<f32>(0.0);
+        var acc1 = vec4<f32>(0.0);
+        var acc2 = vec4<f32>(0.0);
+        var acc3 = vec4<f32>(0.0);
+        for (var kk: u32 = 0u; kk < w4; kk = kk + 1u) {
+            let x0 = tile_a[a0 + kk];
+            let x1 = tile_a[a1 + kk];
+            let x2 = tile_a[a2 + kk];
+            let x3 = tile_a[a3 + kk];
+            let r0 = packed[b0 + kk];
+            let r1 = packed[b1 + kk];
+            let r2 = packed[b2 + kk];
+            let r3 = packed[b3 + kk];
+            acc0 = acc0 + vec4<f32>(dot(x0, r0), dot(x1, r0), dot(x2, r0), dot(x3, r0));
+            acc1 = acc1 + vec4<f32>(dot(x0, r1), dot(x1, r1), dot(x2, r1), dot(x3, r1));
+            acc2 = acc2 + vec4<f32>(dot(x0, r2), dot(x1, r2), dot(x2, r2), dot(x3, r2));
+            acc3 = acc3 + vec4<f32>(dot(x0, r3), dot(x1, r3), dot(x2, r3), dot(x3, r3));
+        }
+        // Same running log-sum-exp as the scalar path, one row at a time so the
+        // rounding matches the CPU reference.
+        var acc = acc0;
+        var bigger = acc > mx;
+        var new_mx = max(mx, acc);
+        sum = select(sum + exp(acc - mx), sum * exp(mx - acc) + vec4<f32>(1.0), bigger);
+        mx = new_mx;
+        acc = acc1;
+        bigger = acc > mx;
+        new_mx = max(mx, acc);
+        sum = select(sum + exp(acc - mx), sum * exp(mx - acc) + vec4<f32>(1.0), bigger);
+        mx = new_mx;
+        acc = acc2;
+        bigger = acc > mx;
+        new_mx = max(mx, acc);
+        sum = select(sum + exp(acc - mx), sum * exp(mx - acc) + vec4<f32>(1.0), bigger);
+        mx = new_mx;
+        acc = acc3;
+        bigger = acc > mx;
+        new_mx = max(mx, acc);
+        sum = select(sum + exp(acc - mx), sum * exp(mx - acc) + vec4<f32>(1.0), bigger);
+        mx = new_mx;
+    }
+    for (; g < hi; g = g + 1u) {
         let b_off = g * w4;
         var acc = vec4<f32>(0.0);
         for (var kk: u32 = 0u; kk < w4; kk = kk + 1u) {

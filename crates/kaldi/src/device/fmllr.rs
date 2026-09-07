@@ -17,14 +17,14 @@
 //! # Rounding
 //!
 //! Both kernels accumulate in f32 while the CPU path uses f64. The frame loop of
-//! kernel 2 is a flat sequential f32 sum of `T` products, so the worst-case relative
-//! error on any `K`/`G` element is bounded by `T * eps` with `eps = 2^-24`, i.e.
-//! about `6e-8 * T`; the posteriors of kernel 1 add another `~n_gauss * eps`. For a
-//! speaker batch of a few hundred thousand frames that is order 1e-2 relative in the
-//! worst case and far smaller in practice (the terms are same-signed for `G`, whose
-//! diagonal dominates the fMLLR solve). Batches are capped at
-//! [`MAX_BATCH_FRAMES`] frames, and each batch's f32 sums are added into the f64
-//! accumulator, so the error does not grow with the speaker's total frame count.
+//! kernel 2 is a flat sequential f32 sum over one of [`GEMM_CHUNKS`] frame chunks
+//! of a batch, so the worst-case relative error on any `K`/`G` element is bounded
+//! by `(T / GEMM_CHUNKS) * eps` with `eps = 2^-24`; the posteriors of kernel 1 add
+//! another `~n_gauss * eps`. For a batch of [`MAX_BATCH_FRAMES`] frames that is
+//! order 2e-4 relative in the worst case and far smaller in practice (the terms are
+//! same-signed for `G`, whose diagonal dominates the fMLLR solve). The chunk partials
+//! and each batch's sums are added in f64, so the error does not grow with the
+//! speaker's total frame count.
 //! The estimated transform is compared against the CPU path to 1e-4 relative in the
 //! unit tests and end to end by alignment parity.
 
@@ -38,6 +38,11 @@ use crate::types::{Feats, PdfId};
 /// Frames per GPU batch. Keeps the f32 sums short (see the rounding note) and the
 /// per-batch buffers small; larger batches buy nothing once the GPU is saturated.
 pub(super) const MAX_BATCH_FRAMES: usize = 262_144;
+
+/// Frame chunks kernel 2 splits a batch into (see `fmllr_gemm.wgsl`): each chunk's
+/// partial `K`/`G` is summed on the host in f64, so more chunks also shorten the
+/// f32 sums. The grid's z extent is `(dim + 1) * GEMM_CHUNKS`.
+const GEMM_CHUNKS: usize = 64;
 
 const TILE: u32 = 8;
 const PARAM_BYTES: u64 = 32;
@@ -144,9 +149,11 @@ fn pipeline(
     })
 }
 
-/// One flattened batch of frames: expanded feature rows for kernel 1, `xplus` rows
-/// for kernel 2, the aligned pdf and the weight per frame.
-struct Batch {
+/// One utterance's frames, expanded for the kernels: feature rows for kernel 1,
+/// `xplus` rows for kernel 2, the aligned pdf and the weight per frame. Zero-weight
+/// frames are dropped here (they contribute nothing and would only cost bandwidth;
+/// MFA's `silence_weight = 0` makes that most of the silence).
+struct Piece {
     expanded: Vec<f32>,
     xplus: Vec<f32>,
     pdfs: Vec<u32>,
@@ -154,53 +161,87 @@ struct Batch {
     frames: usize,
 }
 
-/// Flatten a speaker's utterances into batches of at most `MAX_BATCH_FRAMES` frames,
-/// dropping zero-weight frames entirely (they contribute nothing and would only cost
-/// bandwidth; MFA's `silence_weight = 0` makes that most of the silence).
-fn build_batches(
+/// A frame range of one piece, as uploaded into a batch.
+struct Part<'a> {
+    piece: &'a Piece,
+    off: usize,
+    len: usize,
+}
+
+/// A batch of at most `MAX_BATCH_FRAMES` frames, as a list of piece ranges that are
+/// written straight into the device buffers (no host-side concatenation).
+struct Batch<'a> {
+    parts: Vec<Part<'a>>,
+    frames: usize,
+}
+
+/// Expand every utterance in parallel; ~100 MB of rows for a single speaker with
+/// 13k utterances, so this must not run on one core.
+fn build_pieces(
     feats: &[&Feats],
     pdf_per_frame: &[&[PdfId]],
     weights: &[&[f32]],
     dim: usize,
     padded: usize,
     xw: usize,
-) -> Vec<Batch> {
+) -> Vec<Piece> {
+    use rayon::prelude::*;
+    feats
+        .par_iter()
+        .zip(pdf_per_frame)
+        .zip(weights)
+        .map(|((f, pdfs), ws)| {
+            let n = f.nrows().min(pdfs.len()).min(ws.len());
+            let live = (0..n).filter(|&t| ws[t] != 0.0).count();
+            let mut cur = Piece {
+                expanded: Vec::with_capacity(live * padded),
+                xplus: Vec::with_capacity(live * xw),
+                pdfs: Vec::with_capacity(live),
+                weights: Vec::with_capacity(live),
+                frames: live,
+            };
+            for t in 0..n {
+                if ws[t] == 0.0 {
+                    continue;
+                }
+                let row = f.row(t);
+                // Expanded scoring row [1, x, x*x], zero padded to `padded`.
+                cur.expanded.push(1.0);
+                cur.expanded.extend(row.iter().copied());
+                cur.expanded.extend(row.iter().map(|v| v * v));
+                cur.expanded
+                    .resize(cur.expanded.len() + padded - (1 + 2 * dim), 0.0);
+                // xplus row [x, 1], zero padded to `xw`.
+                cur.xplus.extend(row.iter().copied());
+                cur.xplus.push(1.0);
+                cur.xplus.resize(cur.xplus.len() + xw - (dim + 1), 0.0);
+                cur.pdfs.push(pdfs[t]);
+                cur.weights.push(ws[t]);
+            }
+            cur
+        })
+        .collect()
+}
+
+/// Cut the pieces into batches of at most `MAX_BATCH_FRAMES` frames.
+fn plan_batches(pieces: &[Piece]) -> Vec<Batch<'_>> {
     let mut out = Vec::new();
     let mut cur = Batch {
-        expanded: Vec::new(),
-        xplus: Vec::new(),
-        pdfs: Vec::new(),
-        weights: Vec::new(),
+        parts: Vec::new(),
         frames: 0,
     };
-    for ((f, pdfs), ws) in feats.iter().zip(pdf_per_frame).zip(weights) {
-        let n = f.nrows().min(pdfs.len()).min(ws.len());
-        for t in 0..n {
-            if ws[t] == 0.0 {
-                continue;
-            }
-            let row = f.row(t);
-            // Expanded scoring row [1, x, x*x], zero padded to `padded`.
-            cur.expanded.push(1.0);
-            cur.expanded.extend(row.iter().copied());
-            cur.expanded.extend(row.iter().map(|v| v * v));
-            cur.expanded
-                .resize(cur.expanded.len() + padded - (1 + 2 * dim), 0.0);
-            // xplus row [x, 1], zero padded to `xw`.
-            cur.xplus.extend(row.iter().copied());
-            cur.xplus.push(1.0);
-            cur.xplus.resize(cur.xplus.len() + xw - (dim + 1), 0.0);
-            cur.pdfs.push(pdfs[t]);
-            cur.weights.push(ws[t]);
-            cur.frames += 1;
+    for piece in pieces {
+        let mut off = 0;
+        while off < piece.frames {
+            let len = (piece.frames - off).min(MAX_BATCH_FRAMES - cur.frames);
+            cur.parts.push(Part { piece, off, len });
+            cur.frames += len;
+            off += len;
             if cur.frames == MAX_BATCH_FRAMES {
                 out.push(std::mem::replace(
                     &mut cur,
                     Batch {
-                        expanded: Vec::new(),
-                        xplus: Vec::new(),
-                        pdfs: Vec::new(),
-                        weights: Vec::new(),
+                        parts: Vec::new(),
                         frames: 0,
                     },
                 ));
@@ -233,8 +274,18 @@ pub(super) fn accumulate(
         &packed.offsets,
         |model: &ResidentModel| {
             let padded = model.width() as usize;
-            for batch in build_batches(feats, pdf_per_frame, weights, dim, padded, xw) {
+            let t0 = std::time::Instant::now();
+            let pieces = build_pieces(feats, pdf_per_frame, weights, dim, padded, xw);
+            let build_us = t0.elapsed().as_micros();
+            for batch in plan_batches(&pieces) {
+                let t0 = std::time::Instant::now();
                 let (beta, k, g) = run_batch(ctx, pipes, model, &batch, dim, dim1, xw);
+                tracing::debug!(
+                    frames = batch.frames,
+                    build_us,
+                    batch_us = t0.elapsed().as_micros(),
+                    "fmllr gpu batch"
+                );
                 accs.add_batch_sums(beta, &k, &g);
             }
         },
@@ -257,12 +308,22 @@ fn run_batch(
     let t = batch.frames;
     let w4 = model.width() / 4;
 
-    let store = |label: &str, bytes: &[u8]| {
-        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    // Input buffers are filled part by part through the queue's staging path, so the
+    // pieces are copied once (host -> staging) instead of concatenated first.
+    let store = |label: &str, stride: usize, field: &dyn Fn(&Piece) -> &[f32]| {
+        let buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some(label),
-            contents: bytes,
+            size: (t * stride * 4).max(4) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        })
+            mapped_at_creation: false,
+        });
+        let mut at = 0usize;
+        for p in &batch.parts {
+            let src = &field(p.piece)[p.off * stride..(p.off + p.len) * stride];
+            queue.write_buffer(&buf, (at * 4) as u64, bytemuck::cast_slice(src));
+            at += p.len * stride;
+        }
+        buf
     };
     let uniform = |label: &str, p: [u32; 8]| {
         device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -280,15 +341,17 @@ fn run_batch(
         })
     };
 
-    let feats_buf = store("fmllr-feats", bytemuck::cast_slice(&batch.expanded));
-    let xplus_buf = store("fmllr-xplus", bytemuck::cast_slice(&batch.xplus));
-    let pdf_buf = store("fmllr-pdf", bytemuck::cast_slice(&batch.pdfs));
-    let w_buf = store("fmllr-weight", bytemuck::cast_slice(&batch.weights));
+    let padded = model.width() as usize;
+    let feats_buf = store("fmllr-feats", padded, &|p| &p.expanded);
+    let xplus_buf = store("fmllr-xplus", xw, &|p| &p.xplus);
+    let pdf_buf = store("fmllr-pdf", 1, &|p| bytemuck::cast_slice(&p.pdfs));
+    let w_buf = store("fmllr-weight", 1, &|p| &p.weights);
     let a_buf = zeros("fmllr-a", t * dim);
     let b_buf = zeros("fmllr-b", t * dim);
     let cnt_buf = zeros("fmllr-cnt", t);
-    let k_buf = zeros("fmllr-k", dim * dim1);
-    let g_buf = zeros("fmllr-g", dim * dim1 * dim1);
+    let k_buf = zeros("fmllr-k", GEMM_CHUNKS * dim * dim1);
+    let g_buf = zeros("fmllr-g", GEMM_CHUNKS * dim * dim1 * dim1);
+    let chunk_frames = t.div_ceil(GEMM_CHUNKS).max(1);
 
     let ab_par = uniform(
         "fmllr-ab-par",
@@ -296,7 +359,16 @@ fn run_batch(
     );
     let gemm_par = uniform(
         "fmllr-gemm-par",
-        [t as u32, dim as u32, dim1 as u32, xw as u32, 0, 0, 0, 0],
+        [
+            t as u32,
+            dim as u32,
+            dim1 as u32,
+            xw as u32,
+            chunk_frames as u32,
+            0,
+            0,
+            0,
+        ],
     );
 
     let bind =
@@ -341,8 +413,8 @@ fn run_batch(
     );
 
     let cnt_bytes = (t * 4).max(4) as u64;
-    let k_bytes = (dim * dim1 * 4) as u64;
-    let g_bytes = (dim * dim1 * dim1 * 4) as u64;
+    let k_bytes = (GEMM_CHUNKS * dim * dim1 * 4) as u64;
+    let g_bytes = (GEMM_CHUNKS * dim * dim1 * dim1 * 4) as u64;
     let readback = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("fmllr-readback"),
         size: cnt_bytes + k_bytes + g_bytes,
@@ -364,7 +436,7 @@ fn run_batch(
         pass.set_pipeline(&pipes.gemm);
         pass.set_bind_group(0, &gemm_bg, &[]);
         let tiles = (dim1 as u32).div_ceil(TILE);
-        pass.dispatch_workgroups(tiles, tiles, dim as u32 + 1);
+        pass.dispatch_workgroups(tiles, tiles, (dim as u32 + 1) * GEMM_CHUNKS as u32);
     }
     enc.copy_buffer_to_buffer(&cnt_buf, 0, &readback, 0, cnt_bytes);
     enc.copy_buffer_to_buffer(&k_buf, 0, &readback, cnt_bytes, k_bytes);
@@ -386,12 +458,24 @@ fn run_batch(
         let view = readback.slice(..).get_mapped_range().expect("mapped range");
         let all: &[f32] = bytemuck::cast_slice(&view[..]);
         let cnt = &all[..t];
-        let ks = &all[t..t + dim * dim1];
-        let gs = &all[t + dim * dim1..t + dim * dim1 + dim * dim1 * dim1];
+        let kn = dim * dim1;
+        let gn = dim * dim1 * dim1;
+        let ks = &all[t..t + GEMM_CHUNKS * kn];
+        let gs = &all[t + GEMM_CHUNKS * kn..t + GEMM_CHUNKS * (kn + gn)];
+        // Sum the chunks' partials in f64.
+        let reduce = |src: &[f32], n: usize| -> Vec<f64> {
+            let mut out = vec![0.0f64; n];
+            for c in 0..GEMM_CHUNKS {
+                for (o, &v) in out.iter_mut().zip(&src[c * n..(c + 1) * n]) {
+                    *o += v as f64;
+                }
+            }
+            out
+        };
         (
             cnt.iter().map(|&v| v as f64).sum::<f64>(),
-            ks.iter().map(|&v| v as f64).collect::<Vec<f64>>(),
-            gs.iter().map(|&v| v as f64).collect::<Vec<f64>>(),
+            reduce(ks, kn),
+            reduce(gs, gn),
         )
     };
     readback.unmap();

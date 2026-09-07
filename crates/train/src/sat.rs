@@ -247,8 +247,9 @@ pub fn estimate_fmllr(
         .collect();
 
     // On the GPU the whole speaker is one batched accumulation (two compute kernels
-    // over the concatenated frames); the device serializes speakers itself, so this
-    // loop stays sequential. On the CPU, keep the rayon-over-chunks path.
+    // over the concatenated frames); the device serializes speakers itself, so that
+    // loop stays sequential and only the solves run in parallel. On the CPU, keep
+    // the rayon-over-chunks path.
     let estimate = |spk: usize, accs: FmllrDiagGmmAccs| -> Option<Mat> {
         bar.inc(1);
         if accs.count() < cfg.fmllr.min_count {
@@ -266,10 +267,13 @@ pub fn estimate_fmllr(
     };
 
     let transforms: Vec<Option<Mat>> = if ctx.device.kind() == DeviceKind::Gpu {
-        by_speaker
+        // Accumulate every speaker first, then solve the per-speaker transforms in
+        // parallel: a solve is ~40 ms of dense linear algebra (40 row updates, each
+        // inverting the transform), which on 462 TIMIT speakers dwarfed the kernels.
+        let t0 = std::time::Instant::now();
+        let accs: Vec<FmllrDiagGmmAccs> = by_speaker
             .iter()
-            .enumerate()
-            .map(|(spk, entries)| {
+            .map(|entries| {
                 let live: Vec<usize> = entries
                     .iter()
                     .copied()
@@ -286,9 +290,22 @@ pub fn estimate_fmllr(
                     .collect();
                 let mut accs = FmllrDiagGmmAccs::new(dim);
                 ctx.device.fmllr_accumulate_batch(&f, &p, &w, am, &mut accs);
-                estimate(spk, accs)
+                accs
             })
-            .collect()
+            .collect();
+        let t_acc = t0.elapsed();
+        let t0 = std::time::Instant::now();
+        let out: Vec<Option<Mat>> = accs
+            .into_par_iter()
+            .enumerate()
+            .map(|(spk, accs)| estimate(spk, accs))
+            .collect();
+        tracing::debug!(
+            accumulate_ms = t_acc.as_millis(),
+            solve_ms = t0.elapsed().as_millis(),
+            "fmllr phases"
+        );
+        out
     } else {
         by_speaker
             .par_iter()
