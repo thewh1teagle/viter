@@ -1,0 +1,22 @@
+[package]
+name = "viter-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Command-line surface for viter: train, align, import, serve."
+
+[lib]
+name = "viter_cli"
+path = "src/lib.rs"
+
+[dependencies]
+viter-kaldi.workspace = true
+viter-train.workspace = true
+viter-io.workspace = true
+viter-serve.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+tracing-subscriber.workspace = true
+owo-colors.workspace = true
+tokio.workspace = true

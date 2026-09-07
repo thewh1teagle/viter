@@ -71,6 +71,18 @@ task align model=$model out=$out {
     target/release/viter align $corpus $1 --dict $dict -o $2
 }
 
+# Build the python wheel into dist/ (builds the web viewer first).
+task wheel {
+    exists web/dist || web
+    uv build --wheel
+}
+
+# Run the python tests against the freshly built wheel.
+task pytest {
+    wheel
+    uv run --with dist/*.whl --with pytest --with numpy pytest tests/python -q
+}
+
 # Parity of a TextGrid folder against MFA's: parity [textgrids].
 task parity tg=$train_tg {
     uv run plans/parity/parity_001.py $1 $mfa_tg

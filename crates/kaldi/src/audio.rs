@@ -270,16 +270,21 @@ pub fn resample(a: &Audio, target_rate: u32) -> Audio {
     }
 }
 
-/// Read and resample to 16 kHz, the rate every model in this project uses.
-pub fn read_16k(path: &Path) -> Result<Audio, AudioError> {
-    let a = read(path)?;
-    let mut r = resample(&a, 16_000);
+/// Resample to 16 kHz and snap to the int16 grid — exactly what [`read_16k`]
+/// does after [`read`], for callers that already hold a waveform in memory.
+pub fn to_16k(a: &Audio) -> Audio {
+    let mut r = resample(a, 16_000);
     // kalpy hands Kaldi integer-valued samples (`np.round(wave * 32768)`), so a
     // resampled float waveform is snapped to the int16 grid to match.
     for s in &mut r.samples {
         *s = (*s * 32768.0).round() / 32768.0;
     }
-    Ok(r)
+    r
+}
+
+/// Read and resample to 16 kHz, the rate every model in this project uses.
+pub fn read_16k(path: &Path) -> Result<Audio, AudioError> {
+    Ok(to_16k(&read(path)?))
 }
 
 /// Write 16-bit PCM mono WAV.

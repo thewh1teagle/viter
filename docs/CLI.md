@@ -1,6 +1,6 @@
 # CLI
 
-One binary, three subcommands.
+One binary, three subcommands. Everything here is also callable from Python — see [PYTHON.md](PYTHON.md).
 
 ```
 viter train  <corpus_dir> -o model.viter [flags]
@@ -20,7 +20,7 @@ aligns the full corpus with the final model.
 | `--dict <dict.txt>` | none | pronunciation dictionary. Omit for phoneme-string mode |
 | `--out-textgrids <DIR>` | none | also write TextGrids for the final training alignments |
 | `--config <train.toml>` | none | `TrainConfig` overrides; unset fields keep MFA defaults |
-| `--no-lda` | off | stop after the triphone stage (implies `--no-sat`) |
+| `--no-lda` | off | skip LDA+MLLT; SAT then adapts on delta features, as MFA 3.x exports by default |
 | `--no-sat` | off | stop after LDA+MLLT; no fMLLR, no `am_si` in the model |
 | `--cpu` | off | force the CPU scoring path; skip GPU adapter probing |
 | `--seed <N>` | from config | RNG seed for subset shuffling, Gaussian splitting, flat start |

@@ -14,3 +14,5 @@ image*.png
 *.zip
 *.torrent
 *.aria2
+.env.*
+/dist

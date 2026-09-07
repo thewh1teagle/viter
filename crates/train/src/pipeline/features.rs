@@ -15,9 +15,11 @@ use anyhow::{Context, Result};
 use rayon::prelude::*;
 use std::collections::HashMap;
 use viter_io::corpus::Corpus;
+use viter_kaldi::audio::Audio;
 use viter_kaldi::feat::{self, CmvnStats, DeltaOptions, MfccComputer, MfccOptions};
 use viter_kaldi::transform::Mat;
 use viter_kaldi::types::Feats;
+use viter_kaldi::types::Utterance;
 
 use super::progress::Progress;
 
@@ -74,6 +76,32 @@ impl FeatureStore {
         splice_right: usize,
         progress: &Progress,
     ) -> Result<Self> {
+        Self::build_with_audio(
+            corpus,
+            mfcc,
+            deltas,
+            splice_left,
+            splice_right,
+            progress,
+            &|_, u| {
+                viter_kaldi::audio::read_16k(&u.audio)
+                    .with_context(|| format!("reading audio for utterance {}", u.id))
+            },
+        )
+    }
+
+    /// As `build_with`, but the waveform of each utterance comes from `audio_of`
+    /// (utterance index + the utterance) instead of its `audio` path. The closure
+    /// must return 16 kHz audio; see [`viter_kaldi::audio::to_16k`].
+    pub fn build_with_audio(
+        corpus: &Corpus,
+        mfcc: &MfccOptions,
+        deltas: &DeltaOptions,
+        splice_left: usize,
+        splice_right: usize,
+        progress: &Progress,
+        audio_of: &(dyn Fn(usize, &Utterance) -> Result<Audio> + Sync),
+    ) -> Result<Self> {
         let computer = MfccComputer::new(mfcc.clone());
         let frame_shift_s = computer.frame_shift_s();
 
@@ -94,9 +122,9 @@ impl FeatureStore {
         let mut base: Vec<Feats> = corpus
             .utts
             .par_iter()
-            .map(|u| -> Result<Feats> {
-                let audio = viter_kaldi::audio::read_16k(&u.audio)
-                    .with_context(|| format!("reading audio for utterance {}", u.id))?;
+            .enumerate()
+            .map(|(i, u)| -> Result<Feats> {
+                let audio = audio_of(i, u)?;
                 let f = computer.compute(&audio.samples);
                 bar.inc(1);
                 Ok(f)

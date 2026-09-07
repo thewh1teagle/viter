@@ -461,6 +461,54 @@ fn add_phone_variants(phones: &mut SymbolTable, p: &str, opts: &CorpusOptions) {
 }
 
 // ---------------------------------------------------------------------------
+// In-memory corpora
+//
+// Added for the Python bindings (`crates/python`), which build a corpus from utterances the
+// caller holds in memory rather than from a directory on disk.
+// ---------------------------------------------------------------------------
+
+/// Build a corpus from `(audio path, speaker, transcript)` triples, without touching the
+/// filesystem except to read the dictionary.
+///
+/// This is the many-utterance sibling of [`single`]: `audio` only ever names the utterance
+/// (its file stem becomes the id) and is recorded on the [`Utterance`] for a later reader —
+/// it is never opened here, so a caller aligning in-memory samples can pass a path that does
+/// not exist. Utterances whose transcript yields no usable words are skipped, exactly as in
+/// [`scan`], so the result may be shorter than `items`.
+pub fn from_items(
+    items: &[(&Path, &str, &str)],
+    opts: &CorpusOptions,
+    phones: Option<&SymbolTable>,
+) -> Result<Corpus> {
+    let dict = match &opts.dictionary {
+        Some(p) => Some(Dictionary::load(p)?),
+        None => None,
+    };
+    let mut builder = CorpusBuilder::new(opts, dict.as_ref());
+
+    for (audio, speaker, transcript) in items {
+        // A transcript naming an existing file is read from it, like `single` does.
+        let as_path = Path::new(transcript);
+        let text = if !transcript.contains('\n') && as_path.is_file() {
+            read_transcript(as_path)?
+        } else {
+            (*transcript).to_string()
+        };
+        let id = audio
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "utt".to_string());
+        builder.push(id, (*speaker).to_string(), audio.to_path_buf(), &text)?;
+    }
+
+    let mut corpus = builder.finish();
+    if let Some(model_phones) = phones {
+        remap(&mut corpus, model_phones)?;
+    }
+    Ok(corpus)
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

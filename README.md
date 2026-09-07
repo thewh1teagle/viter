@@ -9,24 +9,20 @@
 
 <p align="center">Forced alignment in one binary. The Montreal Forced Aligner recipe, on your GPU.</p>
 
-|  | Montreal Forced Aligner | viter |
-|---|---|---|
-| Setup | conda, Kaldi, Python | one static binary |
-| Train on LJSpeech, 23.9 h, same recipe | 42 min | **10 min** |
-| Same, short schedule | — | **2 min** |
-| Agreement with MFA on LJSpeech, phone boundaries within 20 ms | reference | **97.4%** |
-| Phone boundaries within 25 ms of TIMIT hand labels, trained on TIMIT | 91.1% (MFA 3.4.0, same corpus; 85.3% [published](docs/TIMIT.md)) | **89.9%** |
-| Same, within 10 ms | 57.9% | **66.5%** |
-| Output | Praat TextGrids | the same TextGrids |
-| Viewer | Praat | `viter serve` |
+<p align="center">
+  <a href="https://pypi.org/project/viter/"><img src="https://img.shields.io/pypi/v/viter" alt="PyPI"></a>
+  <a href="https://github.com/thewh1teagle/viter/releases"><img src="https://img.shields.io/github/v/release/thewh1teagle/viter" alt="release"></a>
+</p>
 
 ## Install
 
 ```
-cargo binstall --git https://github.com/thewh1teagle/viter viter
+uv pip install viter
 ```
 
-Or grab a binary from the [releases page](https://github.com/thewh1teagle/viter/releases).
+The wheel ships the `viter` command and the Python API. For the binary alone,
+`cargo binstall --git https://github.com/thewh1teagle/viter viter` or the
+[releases page](https://github.com/thewh1teagle/viter/releases).
 
 ## Use
 
@@ -38,17 +34,20 @@ viter serve out/
 
 `corpus/` holds audio files with a same-named `.txt` transcript beside each one. Without a dictionary every token is a phoneme, so any language works. An existing MFA model loads with `viter import`.
 
+## Python
+
+```python
+import viter
+
+model = viter.train("corpus/", dict="dict.txt")
+alignment = model.align("audio.wav", "the quick brown fox")
+alignment.to_textgrid("audio.TextGrid")
+```
+
+Examples in [crates/python/examples/](crates/python/examples/).
+
 ## Documentation
 
-| | |
-|---|---|
-| [CLI](docs/CLI.md) | Every flag for `train`, `align`, `import` and `serve` |
-| [Corpus format](docs/CORPUS-FORMAT.md) | Layout, dictionaries, phoneme mode |
-| [Training](docs/TRAINING.md) | The recipe, stage by stage |
-| [Architecture](docs/ARCHITECTURE.md) | Crates, GPU path, no FSTs |
-| [Viewer](docs/VIEWER.md) | The `serve` app and its shortcuts |
-| [Parity](docs/PARITY.md) | Agreement with MFA, measured |
-| [TIMIT](docs/TIMIT.md) | Accuracy against hand-labelled phone boundaries |
-| [Development](docs/DEVELOPMENT.md) | Workspace, tests, rules |
+[docs/](docs/) — CLI flags, corpus format, the Python API, the training recipe, and how the numbers were measured.
 
 MIT.

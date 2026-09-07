@@ -8,6 +8,7 @@
 
 pub mod align;
 pub mod features;
+pub mod inmem;
 pub mod progress;
 pub mod refine;
 pub mod stats;
@@ -16,7 +17,7 @@ use anyhow::{Context, Result, anyhow};
 use rand::SeedableRng;
 use rand_xoshiro::Xoshiro256PlusPlus;
 use rayon::prelude::*;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Instant;
 use viter_io::corpus::Corpus;
 use viter_kaldi::align::AlignOptions;
@@ -29,6 +30,7 @@ use viter_kaldi::types::{Alignment, Feats, IntervalAlignment, PdfId, PhoneId, Pr
 
 pub use align::{AlignOutcome, GraphSet};
 pub use features::{FeatureKind, FeatureStore};
+pub use inmem::align_corpus_with_audio;
 pub use progress::{IterationSummary, Progress};
 pub use stats::{Stats, UpdateOptions};
 
@@ -823,6 +825,24 @@ pub fn align_corpus_with(
     opts: Option<&AlignOptions>,
     over: &AlignOverrides,
 ) -> Result<Vec<Option<IntervalAlignment>>> {
+    align_corpus_reading(corpus, model, device, opts, over, &|_, u| {
+        viter_kaldi::audio::read_16k(&u.audio)
+            .with_context(|| format!("reading audio for utterance {}", u.id))
+    })
+}
+
+/// Shared body of [`align_corpus_with`] and [`align_corpus_with_audio`]: `audio_of`
+/// supplies the 16 kHz waveform of each utterance (for MFCC and for refinement).
+pub(crate) fn align_corpus_reading(
+    corpus: &Corpus,
+    model: &AcousticModel,
+    device: &Device,
+    opts: Option<&AlignOptions>,
+    over: &AlignOverrides,
+    audio_of: &(
+         dyn Fn(usize, &viter_kaldi::types::Utterance) -> Result<viter_kaldi::audio::Audio> + Sync
+     ),
+) -> Result<Vec<Option<IntervalAlignment>>> {
     if corpus.utts.is_empty() {
         return Ok(Vec::new());
     }
@@ -864,7 +884,15 @@ pub fn align_corpus_with(
         .splice
         .unwrap_or((cfg.lda.splice_left, cfg.lda.splice_right));
 
-    let feats = FeatureStore::build_with(corpus, &model.mfcc, &cfg.deltas, sl, sr, &progress)?;
+    let feats = FeatureStore::build_with_audio(
+        corpus,
+        &model.mfcc,
+        &cfg.deltas,
+        sl,
+        sr,
+        &progress,
+        audio_of,
+    )?;
     let frame_shift_s = feats.frame_shift_s();
 
     let ctx = StageCtx {
@@ -978,26 +1006,34 @@ pub fn align_corpus_with(
 
     if let Some(ropts) = &over.refine {
         let bar = progress.bar("refine", utts.len() as u64);
-        let audio: Vec<PathBuf> = corpus.utts.iter().map(|u| u.audio.clone()).collect();
         let feats = &ctx.feats;
         let lda = model.lda.as_ref().map(|m| ((sl, sr), m));
-        intervals = refine::refine_all(
-            &audio,
-            |u| {
+        let alignments = &outcome.alignments;
+        intervals = intervals
+            .par_iter()
+            .enumerate()
+            .map(|(i, iv)| {
                 bar.inc(1);
-                refine::UttFeatureSetup {
+                let iv = iv.as_ref()?;
+                let ali = alignments[i].as_ref()?;
+                let audio = audio_of(i, &corpus.utts[i]).ok()?;
+                let setup = refine::UttFeatureSetup {
                     mfcc: &model.mfcc,
-                    cmvn: feats.cmvn_stats(feats.speaker_of(u)),
+                    cmvn: feats.cmvn_stats(feats.speaker_of(i)),
                     deltas: &cfg.deltas,
                     lda,
-                    fmllr: transforms[feats.speaker_of(u)].as_ref(),
-                }
-            },
-            model,
-            &outcome.alignments,
-            &intervals,
-            ropts,
-        );
+                    fmllr: transforms[feats.speaker_of(i)].as_ref(),
+                };
+                Some(refine::refine_utterance(
+                    &audio.samples,
+                    &setup,
+                    model,
+                    ali,
+                    iv,
+                    ropts,
+                ))
+            })
+            .collect();
         bar.finish();
     }
 

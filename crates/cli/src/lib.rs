@@ -50,7 +50,45 @@ impl Cli {
     }
 }
 
+/// Parse `args` (argv[0] included, like `std::env::args`) and run the subcommand.
+pub fn run<I, T>(args: I) -> anyhow::Result<()>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString> + Clone,
+{
+    Cli::parse_from(args).run()
+}
+
+/// Run the CLI and report the process exit code instead of returning an error.
+///
+/// Never calls [`std::process::exit`], so it is safe to embed (the Python bindings call it).
+/// `--help` / `--version` print to stdout and give 0; a usage error prints to stderr and
+/// gives 2; a failing command prints `error: …` to stderr and gives 1.
+pub fn run_exit_code<I, T>(args: I) -> i32
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString> + Clone,
+{
+    match Cli::try_parse_from(args) {
+        Ok(cli) => match cli.run() {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("error: {e:#}");
+                1
+            }
+        },
+        Err(e) => {
+            // clap already routes --help/--version to stdout and usage errors to stderr.
+            let _ = e.print();
+            if e.use_stderr() { 2 } else { 0 }
+        }
+    }
+}
+
 /// Install the tracing subscriber. `RUST_LOG` overrides the default `info` level.
+///
+/// Idempotent: a second call is a no-op rather than an error, so embedders (the Python
+/// bindings, tests) can call it freely.
 pub fn init_logging() -> anyhow::Result<()> {
     use tracing_subscriber::EnvFilter;
     // Default: warnings only, plus the one-line device announcement. The progress
@@ -63,13 +101,15 @@ pub fn init_logging() -> anyhow::Result<()> {
     let builder = tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(false);
-    if timing {
+    let res = if timing {
         builder
             .with_timer(tracing_subscriber::fmt::time::uptime())
-            .init();
+            .try_init()
     } else {
-        builder.without_time().init();
-    }
+        builder.without_time().try_init()
+    };
+    // A subscriber is already installed for this process — nothing to do.
+    let _ = res;
     Ok(())
 }
 
