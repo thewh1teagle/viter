@@ -64,9 +64,11 @@ align, per-speaker fMLLR estimation, adapted re-align.
 
 Boundaries are then refined to 1 ms: a window of up to ±30 ms around each one is rescored
 with 1 ms-shifted features and the two phones' core pdfs, and the boundary goes where their
-likelihood ratio crosses the midpoint of its range. This is MFA's `--fine_tune` with a wider
-window and steadier pdfs; on TIMIT it moves phone boundaries within 10 ms of the hand labels
-from 50% to 58% ([TIMIT.md](TIMIT.md)). `--no-refine` gives the frame-grid alignment the
+likelihood ratio crosses its range at a level set by the energy step across the window, or
+at the energy onset when the next segment starts with a transient (a stop burst). This is
+MFA's `--fine_tune` with a wider window, steadier pdfs and an energy contour; on TIMIT it
+moves phone boundaries within 10 ms of the hand labels from 50% to 68%
+([TIMIT.md](TIMIT.md)). `--no-refine` gives the frame-grid alignment the
 decoder produced, which is what MFA writes without `--fine_tune` and what the parity numbers
 in [PARITY.md](PARITY.md) are measured on. CTM times have 3 decimals either way.
 

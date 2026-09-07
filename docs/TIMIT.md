@@ -33,7 +33,7 @@ TEST (1344 utterances, 50,337 phone boundaries) vs hand labels:
 
 | system | ≤10 ms | ≤20 ms | ≤25 ms | ≤50 ms | median | mean |
 |---|---|---|---|---|---|---|
-| **viter, trained on TIMIT** | **58.0%** | **84.3%** | **89.5%** | **97.7%** | 8.3 ms | 12.2 ms |
+| **viter, trained on TIMIT** | **68.1%** | **86.5%** | **90.5%** | **97.7%** | 5.9 ms | 10.5 ms |
 | viter, `--no-refine` (10 ms frame grid, MFA's output) | 49.9% | 80.7% | 88.2% | 97.7% | 10.0 ms | 13.6 ms |
 | MFA trained on TIMIT (McAuliffe 2026) | 63.6% | — | 85.3% | 97.1% | — | 12.0 ms |
 | MFA `english_us_arpa` 3.0 (McAuliffe 2026) | 61.9% | — | 83.6% | 97.4% | — | 12.1 ms |
@@ -45,9 +45,9 @@ TRAIN (seen data, the training-time TextGrids, frame grid, 3696 utterances, 139k
 |---|---|---|---|---|---|---|
 | viter | 50.9% | 81.7% | 89.1% | 98.0% | 9.7 ms | 12.9 ms |
 
-viter is above the published GMM-HMM numbers at 25 and 50 ms and below them at 10 ms. The
-published runs are on a different test subset with MFA's own silence handling, so the 25 ms
-column is the comparable one.
+viter is above the published GMM-HMM numbers at every tolerance. The published runs are on
+a different test subset with MFA's own silence handling, so the 25 ms column is the
+comparable one.
 
 ### The 10 ms column (issue #12)
 
@@ -64,35 +64,61 @@ window of up to ±30 ms is rescored with 1 ms-shifted features and the two phone
 middle-state pdfs, and the boundary goes where their likelihood ratio crosses the midpoint
 of its own range in the window. That is MFA's `--fine_tune` idea, self-calibrating per
 boundary; MFA uses the boundary-state pdfs and a ±10 ms window, which on this data gives
-~57% at 10 ms against 58% here. Refined boundaries are placed at the midpoint between the
-centres of the two 1 ms frames they separate, i.e. 4.5 ms after the frame index, which is
-what the frame-grid convention already does at 10 ms.
+~57% at 10 ms against 58% for the midpoint crossing alone. Refined boundaries are placed
+at the midpoint between the centres of the two 1 ms frames they separate, i.e. 4.5 ms after
+the frame index, which is what the frame-grid convention already does at 10 ms.
+
+Two more corrections use a 1 ms log-energy contour of the waveform, i.e. the data rather
+than phone identities (`refine.rs`):
+
+- Boundaries *into a transient*: where some candidate in the window has a rise of at least
+  10 dB between the mean log energy of the 10 ms before it and the 10 ms after, the boundary
+  goes at the largest such rise. The burst flips the pdf ratio as soon as it enters the
+  25 ms analysis window, so the midpoint crossing was 13 ms early for closure→stop (30%
+  within 10 ms); the energy onset is within 10 ms of the hand label for 86% of them. The
+  10 ms before the rise must lie inside the window, otherwise the burst before a stop→vowel
+  boundary is picked up instead of the vowel. Worth +8 points at 10 ms.
+- Elsewhere the crossing level moves from the midpoint towards the louder side's plateau by
+  0.1 per nat of the energy step across the window (second half minus first half), clamped
+  to 0.35..0.65. Measured on the curves, the midpoint crossing is ~5 ms early into a quieter
+  segment (vowel→closure/fricative/nasal) and ~3 ms late into a louder one (nasal→vowel,
+  fricative→vowel), saturating within about a nat either way. Worth +2 points. Boundaries
+  into the model's silence phone keep the midpoint: before a pause the window lies in the
+  phone's decay into silence, not between two plateaus, and the hand label is at or before
+  the window, so a lower level only made those later.
+
+Tried and not kept: a shorter analysis window (5/10/15 ms) scored by the 25 ms-trained
+pdfs; a least-squares change point instead of the midpoint split; modal-state instead of
+middle-state pdfs; a deadzone on the level rule (weakens it without separating the silence
+case); a symmetric "offset" rule at the largest energy fall (helps vowel→closure a little,
+nothing else).
 
 What remains, from the signed breakdown on TEST after refinement:
 
-- Stops are the worst class (38.8% at 10 ms): the closure→burst boundary is still 14 ms
-  early on average. The burst is a transient that flips the ratio as soon as it enters the
-  25 ms analysis window; a shorter window scored by the 25 ms-trained pdfs did not help.
-- Utterance-initial boundaries (silence → first phone, 3% of boundaries) are 20-25 ms
-  early and refinement cannot move them: TIMIT labels the closure of an initial stop as
-  part of `h#`, while medial closures are their own phones, so the model learned the
-  initial stop as closure+burst and scores the closure frames as the stop.
-- Boundaries into vowels out of glides/nasals are now 5-9 ms late.
+- Glides: vowel→glide is 5 ms early and glide→vowel 5 ms late (36% and 44% within 10 ms),
+  both with the refined boundary inside the vowel, and no energy feature separates them
+  (the step is ~0). `l` and `hh` are the worst phones.
+- Utterance-initial boundaries (silence → first phone) are still 7-17 ms early on average
+  (median 1-5 ms): TIMIT labels the closure of an initial stop as part of `h#`, while
+  medial closures are their own phones, so the model learned the initial stop as
+  closure+burst; the onset rule now catches the burst when it is inside the window.
+- Phone ends before a pause are 5 ms late (44% within 10 ms): the phone pdfs cover the
+  decay into silence and the hand label is before the refinement window.
 
 Per phone class on TEST (viter, refined):
 
 | class | n | ≤10 ms | ≤20 ms | ≤25 ms | ≤50 ms | median |
 |---|---|---|---|---|---|---|
-| vowel | 12655 | 64.4% | 86.3% | 91.0% | 98.3% | 6.8 ms |
-| diphthong | 4317 | 59.6% | 82.9% | 88.4% | 97.2% | 7.6 ms |
-| glide | 6026 | 47.5% | 72.1% | 79.6% | 95.1% | 10.8 ms |
-| nasal | 4729 | 64.9% | 85.3% | 89.5% | 97.1% | 7.0 ms |
-| fricative | 7498 | 63.9% | 88.7% | 93.1% | 98.2% | 7.4 ms |
-| affricate | 623 | 64.2% | 89.6% | 93.6% | 98.2% | 7.5 ms |
-| stop | 7494 | 38.8% | 79.1% | 86.5% | 97.8% | 12.8 ms |
-| closure | 6995 | 63.5% | 91.8% | 95.2% | 98.6% | 7.5 ms |
+| vowel | 12655 | 67.8% | 86.5% | 91.1% | 98.4% | 5.6 ms |
+| diphthong | 4317 | 64.0% | 83.3% | 88.7% | 97.2% | 6.5 ms |
+| glide | 6026 | 54.1% | 74.5% | 80.7% | 95.1% | 8.5 ms |
+| nasal | 4729 | 70.0% | 86.9% | 90.8% | 97.4% | 5.8 ms |
+| fricative | 7498 | 69.3% | 89.2% | 92.4% | 98.0% | 6.4 ms |
+| affricate | 623 | 79.1% | 90.0% | 92.6% | 97.8% | 3.5 ms |
+| stop | 7494 | 76.5% | 89.4% | 91.8% | 97.7% | 3.7 ms |
+| closure | 6995 | 70.4% | 92.3% | 95.0% | 98.6% | 6.4 ms |
 
-Worst phones at 20 ms (39-fold): `p` 35%, `hh` 61%, `q` 66%, `l` 69%, `b` 70%.
+Worst phones at 20 ms (39-fold): `hh` 65%, `q` 66%, `l` 69%, `p` 75%, `uw` 76%.
 
 Word boundaries on TEST (`.WRD` tier, 13,210 boundaries; 8 files skipped where the word
 grouping from `.WRD` disagrees with the phone grouping), for comparison with neural word

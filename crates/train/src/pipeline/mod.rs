@@ -990,8 +990,7 @@ pub fn align_corpus_with(
                     fmllr: transforms[feats.speaker_of(u)].as_ref(),
                 }
             },
-            &model.tm,
-            &model.am,
+            model,
             &outcome.alignments,
             &intervals,
             ropts,

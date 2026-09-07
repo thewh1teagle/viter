@@ -16,6 +16,17 @@
 //! `gmm_interpolate_boundary_fast`) does with boundary-state pdfs in a ±10 ms window.
 //! Core pdfs and a wider window were worth another ~4 points at 10 ms on TIMIT.
 //!
+//! Two corrections come from a 1 ms log-energy contour of the waveform, i.e. from the
+//! data rather than from phone identities. A boundary into a transient — a rise of
+//! 10 dB or more between the 10 ms before and after some candidate — goes at the
+//! rise ([`onset`]): the burst flips the ratio as soon as it enters the 25 ms window,
+//! so the crossing was 13 ms early for closure-stop boundaries on TIMIT (30% within
+//! 10 ms; 86% at the onset). Elsewhere the crossing level is moved from the midpoint
+//! towards the louder side's plateau in proportion to the energy step across the
+//! window ([`level`]), which takes out the remaining ~5 ms early bias into quieter
+//! segments and ~3 ms late bias into louder ones. Together they were worth another
+//! ~10 points at 10 ms on TIMIT.
+//!
 //! The 1 ms features are the ordinary pipeline (MFCC, speaker CMVN, deltas or
 //! splice+LDA, fMLLR) computed on the waveform at each of the ten 1 ms offsets, so
 //! every 1 ms frame carries exactly the training-time context; MFA splices 1 ms
@@ -30,8 +41,8 @@
 use ndarray::Array2;
 use rayon::prelude::*;
 use viter_kaldi::feat::{self, CmvnStats, DeltaOptions, MfccComputer, MfccOptions};
-use viter_kaldi::gmm::AmDiagGmm;
 use viter_kaldi::hmm::TransitionModel;
+use viter_kaldi::model::AcousticModel;
 use viter_kaldi::transform::Mat;
 use viter_kaldi::types::{
     Alignment, Feats, IntervalAlignment, PdfId, PhoneInterval, TransitionId, WordInterval,
@@ -121,12 +132,12 @@ fn core_pdf(tm: &TransitionModel, run: &[TransitionId], fallback: TransitionId) 
 pub fn refine_utterance(
     samples_16k: &[f32],
     setup: &UttFeatureSetup<'_>,
-    tm: &TransitionModel,
-    am: &AmDiagGmm,
+    model: &AcousticModel,
     ali: &Alignment,
     intervals: &IntervalAlignment,
     opts: &RefineOptions,
 ) -> IntervalAlignment {
+    let (tm, am) = (&model.tm, &model.am);
     let fine = FineFeats::compute(samples_16k, setup);
     let shift_ms = (intervals.frame_shift_s * 1000.0).round() as usize;
     let frames = ali.tids.len();
@@ -172,7 +183,21 @@ pub fn refine_utterance(
         if ratio.iter().any(|r| !r.is_finite()) {
             continue;
         }
-        if let Some(i) = best_split(&ratio) {
+        // Candidate boundary `i` sits between 1 ms frames `lo + i - 1` and `lo + i`,
+        // i.e. at `lo + i + CENTRE_MS` ms; the energy contour is indexed the same way
+        // with ONSET_MS of margin on both sides.
+        let energy = energy_contour(samples_16k, lo + CENTRE_MS, ratio.len());
+        // Before a pause the window lies in the phone's decay into silence, not
+        // between two phones' plateaus, and the energy step there is meaningless:
+        // TIMIT's hand label is at or before the window, and a lower level only
+        // moves these later.
+        let level = if model.silence_phones.contains(&intervals.phones[k].phone) {
+            0.5
+        } else {
+            level(&energy)
+        };
+        let split = onset(&energy).or_else(|| best_split(&ratio, level));
+        if let Some(i) = split {
             bounds[k] = lo + i + CENTRE_MS;
         }
     }
@@ -213,17 +238,86 @@ pub fn refine_utterance(
     }
 }
 
+/// Log energy (natural log of the mean square; 1 nat = 4.3 dB) of the 5 ms of
+/// waveform centred at `ms`; the floor past either end of the waveform.
+fn log_energy(samples_16k: &[f32], ms: usize) -> f32 {
+    let c = ms * 16;
+    let lo = c.saturating_sub(40).min(samples_16k.len());
+    let hi = (c + 40).min(samples_16k.len());
+    let n = (hi - lo).max(1) as f32;
+    let s: f32 = samples_16k[lo..hi].iter().map(|x| x * x).sum();
+    (s / n + 1e-10).ln()
+}
+
+/// The 1 ms log-energy contour around `n` candidate boundaries starting at `first`
+/// ms: `ONSET_MS` values before, the `n` candidates, `ONSET_MS` after.
+fn energy_contour(samples_16k: &[f32], first: usize, n: usize) -> Vec<f32> {
+    (0..n + 2 * ONSET_MS)
+        .map(|j| log_energy(samples_16k, (first + j).saturating_sub(ONSET_MS)))
+        .collect()
+}
+
+/// Length of the means compared by [`onset`] and of the contour's margins, ms.
+const ONSET_MS: usize = 10;
+
+/// Rise of the mean log energy across a candidate boundary that makes it a
+/// transient onset: 2.3 nats = 10 dB.
+const ONSET_STEP: f32 = 2.3;
+
+/// A boundary into a transient (a stop burst): the candidate with the largest rise
+/// of the mean log energy over the `ONSET_MS` after it against the `ONSET_MS` before
+/// it, if that rise is at least `ONSET_STEP`. The burst is a loud transient that
+/// flips the pdf ratio as soon as it enters the 25 ms analysis window, so the ratio
+/// crossing sits ~13 ms early on TIMIT while the hand label is at the burst onset,
+/// which this finds within 10 ms for 86% of closure-stop boundaries. The `ONSET_MS`
+/// before the rise must lie inside the window, so an earlier onset just outside it
+/// (the burst before a stop-vowel boundary) is not picked up.
+fn onset(energy: &[f32]) -> Option<usize> {
+    let n = energy.len() - 2 * ONSET_MS;
+    let mean = |s: &[f32]| s.iter().sum::<f32>() / s.len() as f32;
+    let rise = |i: usize| {
+        let j = i + ONSET_MS;
+        mean(&energy[j..j + ONSET_MS]) - mean(&energy[j - ONSET_MS..j])
+    };
+    let mut best = (ONSET_STEP, None);
+    for i in ONSET_MS..n {
+        let r = rise(i);
+        if r > best.0 || (r == best.0 && best.1.is_none()) {
+            best = (r, Some(i));
+        }
+    }
+    best.1
+}
+
+/// Crossing level for [`best_split`] from the energy step across the window (mean
+/// log energy of its second half minus its first): the midpoint, moved by
+/// `LEVEL_PER_NAT` per nat towards the louder side's plateau and clamped to
+/// `0.5 ± LEVEL_RANGE`. On TIMIT the midpoint crossing is ~5 ms early into a quieter
+/// segment (vowel-closure, vowel-fricative, vowel-nasal) and ~3 ms late into a louder
+/// one (nasal-vowel, fricative-vowel), saturating within about a nat either way; a
+/// lower level moves the split later, a higher one earlier.
+fn level(energy: &[f32]) -> f32 {
+    let inner = &energy[ONSET_MS..energy.len() - ONSET_MS];
+    let (a, b) = inner.split_at(inner.len() / 2);
+    let mean = |s: &[f32]| s.iter().sum::<f32>() / s.len().max(1) as f32;
+    let step = mean(b) - mean(a);
+    0.5 + (LEVEL_PER_NAT * step).clamp(-LEVEL_RANGE, LEVEL_RANGE)
+}
+
+const LEVEL_PER_NAT: f32 = 0.1;
+const LEVEL_RANGE: f32 = 0.15;
+
 /// Index of the first frame of the next phone: the split of the window that
-/// maximizes the summed midpoint-centred ratio on the left minus the right, i.e.
-/// `sum_{s<i} (r - mid) - sum_{s>=i} (r - mid)` with `mid` the midpoint of the
-/// window's min and max. `None` when the ratio is flat.
-fn best_split(ratio: &[f32]) -> Option<usize> {
+/// maximizes the summed level-centred ratio on the left minus the right, i.e.
+/// `sum_{s<i} (r - mid) - sum_{s>=i} (r - mid)` with `mid` at fraction `level` of
+/// the way from the window's min to its max. `None` when the ratio is flat.
+fn best_split(ratio: &[f32], level: f32) -> Option<usize> {
     let min = ratio.iter().copied().fold(f32::INFINITY, f32::min);
     let max = ratio.iter().copied().fold(f32::NEG_INFINITY, f32::max);
     if max - min <= 0.0 {
         return None;
     }
-    let mid = 0.5 * (min + max);
+    let mid = min + level * (max - min);
     let total: f32 = ratio.iter().map(|r| r - mid).sum();
     let mut best = (f32::NEG_INFINITY, 0usize);
     let mut prefix = 0.0f32;
@@ -244,8 +338,7 @@ fn best_split(ratio: &[f32]) -> Option<usize> {
 pub fn refine_all<'a>(
     audio_paths: &[std::path::PathBuf],
     setup_for: impl Fn(usize) -> UttFeatureSetup<'a> + Sync,
-    tm: &TransitionModel,
-    am: &AmDiagGmm,
+    model: &AcousticModel,
     alignments: &[Option<Alignment>],
     intervals: &[Option<IntervalAlignment>],
     opts: &RefineOptions,
@@ -261,8 +354,7 @@ pub fn refine_all<'a>(
             Some(refine_utterance(
                 &audio.samples,
                 &setup,
-                tm,
-                am,
+                model,
                 ali,
                 iv,
                 opts,
@@ -279,24 +371,71 @@ mod tests {
     fn best_split_finds_a_clean_step() {
         // +1 for 5 frames then -1 for 5 frames: the next phone starts at 5.
         let r = [1.0, 1.0, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0, -1.0, -1.0];
-        assert_eq!(best_split(&r), Some(5));
+        assert_eq!(best_split(&r, 0.5), Some(5));
     }
 
     #[test]
     fn midpoint_calibration_ignores_a_biased_zero() {
         // A ratio that never goes negative still has its step found at the midpoint.
         let r = [5.0, 5.0, 5.0, 1.0, 1.0, 1.0];
-        assert_eq!(best_split(&r), Some(3));
+        assert_eq!(best_split(&r, 0.5), Some(3));
     }
 
     #[test]
     fn best_split_is_robust_to_a_blip() {
         let r = [1.0, 1.0, -0.5, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0, -1.0];
-        assert_eq!(best_split(&r), Some(6));
+        assert_eq!(best_split(&r, 0.5), Some(6));
     }
 
     #[test]
     fn flat_ratio_keeps_the_boundary() {
-        assert_eq!(best_split(&[2.0, 2.0, 2.0]), None);
+        assert_eq!(best_split(&[2.0, 2.0, 2.0], 0.5), None);
+    }
+
+    #[test]
+    fn crossing_level_moves_the_split() {
+        // A ramp: a lower level counts more of it as prev-like, so the split is later.
+        let r: Vec<f32> = (0..20).map(|i| 10.0 - i as f32).collect();
+        assert_eq!(best_split(&r, 0.5), Some(10));
+        assert_eq!(best_split(&r, 0.35), Some(13));
+        assert_eq!(best_split(&r, 0.65), Some(7));
+    }
+
+    /// A contour for `n` candidates, quiet (-8) until candidate `at`, then `loud`.
+    fn step_contour(n: usize, at: usize, loud: f32) -> Vec<f32> {
+        (0..n + 2 * ONSET_MS)
+            .map(|j| if j < at + ONSET_MS { -8.0 } else { loud })
+            .collect()
+    }
+
+    #[test]
+    fn onset_finds_a_burst_and_ignores_a_small_step() {
+        assert_eq!(onset(&step_contour(40, 27, -2.0)), Some(27));
+        assert_eq!(onset(&step_contour(40, 27, -7.0)), None);
+    }
+
+    #[test]
+    fn onset_needs_its_quiet_side_inside_the_window() {
+        // A step at candidate 1 has almost none of its quiet side among the candidates.
+        assert_eq!(onset(&step_contour(40, 1, 0.0)), None);
+        assert_eq!(onset(&step_contour(40, ONSET_MS, 0.0)), Some(ONSET_MS));
+    }
+
+    #[test]
+    fn log_energy_is_finite_past_the_waveform() {
+        let s = vec![0.5f32; 100];
+        assert!(log_energy(&s, 3).is_finite());
+        assert!(log_energy(&s, 6).is_finite()); // window straddles the end
+        assert!(log_energy(&s, 1000).is_finite()); // entirely past it
+        assert!(log_energy(&s, 1000) < log_energy(&s, 3));
+    }
+
+    #[test]
+    fn level_follows_the_energy_step_and_saturates() {
+        assert!((level(&step_contour(40, 20, -8.0)) - 0.5).abs() < 1e-6);
+        assert!(level(&step_contour(40, 20, -7.0)) > 0.5);
+        assert!((level(&step_contour(40, 20, 0.0)) - 0.65).abs() < 1e-6);
+        let quieter: Vec<f32> = step_contour(40, 20, 0.0).into_iter().rev().collect();
+        assert!((level(&quieter) - 0.35).abs() < 1e-6);
     }
 }
