@@ -11,3 +11,6 @@ data/
 /data
 /plans
 image*.png
+*.zip
+*.torrent
+*.aria2

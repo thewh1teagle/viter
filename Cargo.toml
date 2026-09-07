@@ -3,7 +3,7 @@ members = ["crates/*"]
 resolver = "3"
 
 [workspace.package]
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/thewh1teagle/viter"
@@ -43,7 +43,7 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 # server
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
-tower-http = { version = "0.6", features = ["cors"] }
+tower-http = { version = "0.6", features = ["cors", "compression-gzip", "compression-br"] }
 rust-embed = "8"
 mime_guess = "2"
 bytes = "1"

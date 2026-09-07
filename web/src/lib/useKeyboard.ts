@@ -1,6 +1,6 @@
 import { useEffect } from "react"
 import type { PlayerRef } from "@/lib/player"
-import { matchesQuery, navTierIndex, neighbourInterval } from "@/lib/time"
+import { filterIndices, navTierIndex, neighbourInterval } from "@/lib/time"
 import { useStore } from "@/store"
 
 function isTypingTarget(el: EventTarget | null): boolean {
@@ -67,15 +67,24 @@ export function useKeyboard(
       }
 
       if (e.key === "[" || e.key === "]") {
-        const visible = s.files.filter((f) => matchesQuery(f.id, s.query))
-        if (visible.length === 0) return
+        // Same filter the sidebar shows, so [ / ] walks exactly the visible rows.
+        const matches = filterIndices(s.fileHaystack, s.appliedQuery)
+        const count = matches ? matches.length : s.files.length
+        if (count === 0) return
         e.preventDefault()
-        const cur = visible.findIndex((f) => f.id === s.currentId)
+        const at = (row: number) => s.files[matches ? matches[row] : row]
+        let cur = -1
+        for (let i = 0; i < count; i++) {
+          if (at(i)?.id === s.currentId) {
+            cur = i
+            break
+          }
+        }
         const step = e.key === "]" ? 1 : -1
-        const next = cur < 0 ? (step === 1 ? 0 : visible.length - 1) : cur + step
-        if (next < 0 || next >= visible.length) return
+        const next = cur < 0 ? (step === 1 ? 0 : count - 1) : cur + step
+        if (next < 0 || next >= count) return
         player.pause()
-        s.selectFile(visible[next].id)
+        s.selectFile(at(next).id)
       }
     }
 

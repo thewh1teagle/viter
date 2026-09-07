@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef } from "react"
-import { AnimatePresence } from "motion/react"
 import { toast } from "sonner"
 import { ApiError, fetchFiles, fetchTextGrid } from "@/api"
 import {
@@ -74,7 +73,10 @@ export default function App() {
     return () => abort.abort()
   }, [currentId])
 
-  const current = files.find((f) => f.id === currentId) ?? null
+  const current = useMemo(
+    () => (currentId ? (files.find((f) => f.id === currentId) ?? null) : null),
+    [files, currentId]
+  )
   const showEmpty = !filesLoading && (files.length === 0 || filesError !== null)
 
   return (
@@ -93,17 +95,18 @@ export default function App() {
             {showEmpty ? (
               <EmptyState error={filesError} />
             ) : (
-              <AnimatePresence mode="wait" initial={false}>
-                {current && (
-                  <Viewer
-                    key={current.id}
-                    file={current}
-                    textgrid={textgrid}
-                    loading={textgridLoading}
-                    player={player}
-                  />
-                )}
-              </AnimatePresence>
+              current && (
+                // Deliberately *not* keyed by file id: remounting per file tore
+                // down and rebuilt WaveSurfer (and, with `mode="wait"`, only
+                // after the exit animation finished). The Viewer now stays
+                // mounted and swaps its source in place.
+                <Viewer
+                  file={current}
+                  textgrid={textgrid}
+                  loading={textgridLoading}
+                  player={player}
+                />
+              )
             )}
           </div>
         </ResizablePanel>

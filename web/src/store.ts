@@ -18,9 +18,14 @@ export const MAX_PX_PER_SEC = 4000
 
 interface State {
   files: FileEntry[]
+  /** `files[i].id` lowercased once, so search never re-lowercases 13k strings. */
+  fileHaystack: string[]
   filesLoading: boolean
   filesError: string | null
+  /** Live input value; drives the text field only. */
   query: string
+  /** `query` after the debounce; drives filtering. */
+  appliedQuery: string
 
   currentId: string | null
   textgrid: TextGrid | null
@@ -42,6 +47,7 @@ interface State {
   setFilesLoading: (loading: boolean) => void
   setFilesError: (error: string | null) => void
   setQuery: (query: string) => void
+  setAppliedQuery: (query: string) => void
 
   selectFile: (id: string | null) => void
   setTextGrid: (tg: TextGrid | null) => void
@@ -83,9 +89,11 @@ export function applyTheme(theme: Theme) {
 
 export const useStore = create<State>((set, get) => ({
   files: [],
+  fileHaystack: [],
   filesLoading: true,
   filesError: null,
   query: "",
+  appliedQuery: "",
 
   currentId: null,
   textgrid: null,
@@ -101,10 +109,11 @@ export const useStore = create<State>((set, get) => ({
 
   theme: initialTheme(),
 
-  setFiles: (files) => set({ files }),
+  setFiles: (files) => set({ files, fileHaystack: files.map((f) => f.id.toLowerCase()) }),
   setFilesLoading: (filesLoading) => set({ filesLoading }),
   setFilesError: (filesError) => set({ filesError }),
   setQuery: (query) => set({ query }),
+  setAppliedQuery: (appliedQuery) => set({ appliedQuery }),
 
   selectFile: (currentId) => {
     if (get().currentId === currentId) return

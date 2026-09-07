@@ -92,3 +92,28 @@ export function matchesQuery(id: string, query: string): boolean {
   const hay = id.toLowerCase()
   return q.split(/\s+/).every((part) => hay.includes(part))
 }
+
+/**
+ * Indices of the entries matching `query`, scanning a haystack of ids that were
+ * lowercased once when the list was loaded. Returning indices (rather than
+ * sliced `FileEntry` objects) keeps the filter allocation-free for the common
+ * empty query, which is what the virtualised list wants.
+ */
+export function filterIndices(haystack: string[], query: string): number[] | null {
+  const q = query.trim().toLowerCase()
+  if (q === "") return null
+  const parts = q.split(/\s+/)
+  const out: number[] = []
+  for (let i = 0; i < haystack.length; i++) {
+    const hay = haystack[i]
+    let ok = true
+    for (const part of parts) {
+      if (!hay.includes(part)) {
+        ok = false
+        break
+      }
+    }
+    if (ok) out.push(i)
+  }
+  return out
+}

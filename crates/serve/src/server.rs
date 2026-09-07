@@ -11,6 +11,8 @@ use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::Response;
 use axum::routing::get;
 use rust_embed::RustEmbed;
+use tower_http::compression::CompressionLayer;
+use tower_http::compression::predicate::SizeAbove;
 use tower_http::cors::CorsLayer;
 
 use crate::api::{self, AppState};
@@ -81,11 +83,18 @@ pub async fn serve(opts: ServeOptions) -> anyhow::Result<()> {
 /// Build the full router. Split out from [`serve`] so it can be exercised without binding a port.
 pub fn router(state: AppState) -> Router {
     // Ids are relative paths and so contain `/`; the wildcard capture keeps them intact.
+    // `/api/files` is ~1.5 MB of JSON for a 13k-file corpus and TextGrids are
+    // similarly repetitive text, so both compress by an order of magnitude.
+    // Audio is excluded: it is already compressed and, more importantly, it is
+    // served with `Range` support, which a compressing layer would invalidate.
+    let compression = CompressionLayer::new().compress_when(SizeAbove::new(1024));
+
     Router::new()
         .route("/api/files", get(api::list_files))
         .route("/api/textgrid/{*id}", get(api::get_textgrid))
-        .route("/api/audio/{*id}", get(api::get_audio))
         .route("/api/peaks/{*id}", get(api::get_peaks))
+        .layer(compression)
+        .route("/api/audio/{*id}", get(api::get_audio))
         .with_state(state)
         // The viewer is served from the same origin, but CORS keeps a separate `vite dev`
         // front-end (port 5173) able to talk to this API during development.

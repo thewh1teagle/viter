@@ -27,11 +27,11 @@ export function Viewer({
   const zoomBy = (factor: number) => player.zoomAt(zoom * factor, playhead)
 
   return (
+    // Mounted once and reused across files: no per-file remount, so the
+    // WaveSurfer instance below survives a selection change.
     <motion.div
-      key={file.id}
       initial={{ opacity: 0, y: 6 }}
       animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, y: -6 }}
       transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
       className="flex h-full min-h-0 flex-col"
     >
