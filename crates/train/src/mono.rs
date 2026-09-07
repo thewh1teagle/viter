@@ -91,7 +91,7 @@ pub fn run(ctx: &mut StageCtx<'_>, cfg: &MonoConfig) -> Result<StageOutput> {
 
     // Graphs are built once: the monophone tree never changes during this stage.
     let bar = ctx.progress.bar("graphs", utts.len() as u64);
-    let graphs = {
+    let mut graphs = {
         let m = ctx.model();
         GraphSet::build(
             utts.len(),
@@ -188,7 +188,7 @@ pub fn run(ctx: &mut StageCtx<'_>, cfg: &MonoConfig) -> Result<StageOutput> {
         &mut NoHooks,
         feats,
         &rebuild,
-        &graphs,
+        &mut graphs,
         outcome.alignments,
     )?;
 

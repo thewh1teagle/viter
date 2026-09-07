@@ -107,7 +107,7 @@ pub fn run(ctx: &mut StageCtx<'_>, cfg: &LdaConfig) -> Result<StageOutput> {
     }
 
     let bar = ctx.progress.bar("graphs", utts.len() as u64);
-    let graphs = {
+    let mut graphs = {
         let m = ctx.model();
         GraphSet::build(
             utts.len(),
@@ -153,7 +153,13 @@ pub fn run(ctx: &mut StageCtx<'_>, cfg: &LdaConfig) -> Result<StageOutput> {
     );
 
     let alignments = run_iterations(
-        ctx, &mut plan, &mut hooks, feats, &rebuild, &graphs, converted,
+        ctx,
+        &mut plan,
+        &mut hooks,
+        feats,
+        &rebuild,
+        &mut graphs,
+        converted,
     )?;
 
     ctx.progress.stage_done("lda", "");

@@ -242,7 +242,7 @@ pub fn run_iterations(
     hooks: &mut dyn IterationHooks,
     mut feats: Vec<Feats>,
     rebuild_feats: &dyn Fn(&StageCtx<'_>, &[usize]) -> Vec<Feats>,
-    graphs: &GraphSet,
+    graphs: &mut GraphSet,
     initial_alignments: Vec<Option<Alignment>>,
 ) -> Result<Vec<Option<Alignment>>> {
     let stage_name = plan.stage.name();
@@ -270,6 +270,9 @@ pub fn run_iterations(
                 plan.utts.len() as u64,
             );
             let m = ctx.model();
+            // Kaldi compiles training graphs without transition probabilities and adds
+            // the current model's on every alignment pass; do the same.
+            graphs.apply_transition_probs(&m.tm, &ctx.graph);
             let outcome = align::align_boosted(
                 graphs,
                 &m.tm,

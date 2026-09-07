@@ -63,6 +63,14 @@ impl GraphSet {
     pub fn graph(&self, i: usize) -> &Graph {
         &self.graphs[i]
     }
+
+    /// Re-cost every graph from the current transition model (see
+    /// [`Graph::apply_transition_probs`]); training calls this before each realignment.
+    pub fn apply_transition_probs(&mut self, tm: &TransitionModel, opts: &GraphOptions) {
+        self.graphs.par_iter_mut().for_each(|g| {
+            g.apply_transition_probs(tm, opts.transition_scale, opts.self_loop_scale)
+        });
+    }
     pub fn pdfs(&self, i: usize) -> &[PdfId] {
         &self.pdfs[i]
     }

@@ -391,7 +391,7 @@ fn install_and_train(
 
     // Graphs must be rebuilt: the tree changed, so pdf ids and transition ids did too.
     let bar = ctx.progress.bar("graphs", utts.len() as u64);
-    let graphs = {
+    let mut graphs = {
         let m = ctx.model();
         GraphSet::build(
             utts.len(),
@@ -405,7 +405,15 @@ fn install_and_train(
     bar.finish();
 
     let rebuild = |c: &StageCtx<'_>, u: &[usize]| c.feats.feats_for_many(u, FeatureKind::Deltas);
-    run_iterations(ctx, plan, &mut NoHooks, feats, &rebuild, &graphs, converted)
+    run_iterations(
+        ctx,
+        plan,
+        &mut NoHooks,
+        feats,
+        &rebuild,
+        &mut graphs,
+        converted,
+    )
 }
 
 /// Groups of phones sharing a tree root: all position variants of one base phone.

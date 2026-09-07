@@ -99,7 +99,7 @@ pub fn run(ctx: &mut StageCtx<'_>, cfg: &SatConfig, key: &str) -> Result<StageOu
     let converted = install(ctx, setup, prev_alignments, &utts)?;
 
     let bar = ctx.progress.bar("graphs", utts.len() as u64);
-    let graphs = {
+    let mut graphs = {
         let m = ctx.model();
         GraphSet::build(
             utts.len(),
@@ -120,7 +120,13 @@ pub fn run(ctx: &mut StageCtx<'_>, cfg: &SatConfig, key: &str) -> Result<StageOu
     let feats = ctx.feats.feats_for_many(&utts, current_kind(ctx));
 
     let alignments = run_iterations(
-        ctx, &mut plan, &mut hooks, feats, &rebuild, &graphs, converted,
+        ctx,
+        &mut plan,
+        &mut hooks,
+        feats,
+        &rebuild,
+        &mut graphs,
+        converted,
     )?;
 
     // Speaker-independent alignment model from two-feature statistics.

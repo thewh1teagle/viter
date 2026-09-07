@@ -49,6 +49,10 @@ pub struct Arc {
     pub next: u32,
     /// `-log prob`, with `transition_scale` / `self_loop_scale` already applied.
     pub cost: f32,
+    /// The part of `cost` that does not come from the transition model (lexicon and
+    /// silence probabilities, fixed topology probabilities of non-emitting states).
+    /// [`Graph::apply_transition_probs`] rebuilds `cost` from it.
+    pub lm: f32,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -62,6 +66,11 @@ pub struct Graph {
     pub states: Vec<GraphState>,
     /// `(state, final cost)`.
     pub finals: Vec<(u32, f32)>,
+    /// The transition-model-free part of each final cost, parallel to `finals`.
+    finals_lm: Vec<f32>,
+    /// Transition-state of the arcs entering each state (`AddSelfLoopsReorder`'s
+    /// `state_in`), recorded when the self-loops are added.
+    state_in: Vec<Option<u32>>,
 }
 
 impl Graph {
@@ -87,6 +96,58 @@ impl Graph {
 
     pub fn is_final(&self, state: u32) -> bool {
         self.finals.iter().any(|(s, _)| *s == state)
+    }
+
+    /// Record the entering transition-states and the final costs' model-free part;
+    /// called once, after the self-loop arcs are in place and before any costing.
+    pub(super) fn set_state_in(&mut self, state_in: Vec<Option<u32>>) {
+        self.state_in = state_in;
+        self.finals_lm = self.finals.iter().map(|&(_, c)| c).collect();
+    }
+
+    /// Re-cost every arc and final from the current transition model, the way Kaldi's
+    /// training compiles graphs with zero scales and `gmm-align-compiled` adds the
+    /// model's probabilities on every pass (`AddTransitionProbs`, hmm-utils.cc:1065):
+    /// forward arcs cost `-transition_scale * log p(tid)` ignoring self-loops, and
+    /// everything leaving (or ending at) a state entered by transition-state `T`
+    /// carries `-self_loop_scale * GetNonSelfLoopLogProb(T)`, with the self-loop
+    /// itself at `-self_loop_scale * log p(loop)` (`AddSelfLoopsReorder`).
+    ///
+    /// Training must call this before each realignment: the probabilities are
+    /// re-estimated every iteration, and a graph costed from the initial topology keeps
+    /// the state-skips at `1/3` all stage long, where the trained model puts them near
+    /// the floor. That let one- and two-frame phones stay cheap and biased stops and
+    /// closures by ~10 ms against hand labels (issue #12).
+    pub fn apply_transition_probs(
+        &mut self,
+        tm: &TransitionModel,
+        transition_scale: f32,
+        self_loop_scale: f32,
+    ) {
+        debug_assert_eq!(self.state_in.len(), self.states.len());
+        let state_in = &self.state_in;
+        for (s, st) in self.states.iter_mut().enumerate() {
+            let non_self_loop = state_in[s].map_or(0.0, |ts| {
+                -self_loop_scale * tm.get_non_self_loop_log_prob(ts)
+            });
+            for a in &mut st.arcs {
+                let is_loop = a.tid != 0 && a.next as usize == s && tm.is_self_loop(a.tid);
+                a.cost = if is_loop {
+                    -self_loop_scale * tm.get_transition_log_prob(a.tid)
+                } else if a.tid != 0 {
+                    a.lm - transition_scale * tm.get_transition_log_prob_ignoring_self_loops(a.tid)
+                        + non_self_loop
+                } else {
+                    a.lm + non_self_loop
+                };
+            }
+        }
+        for (i, (s, c)) in self.finals.iter_mut().enumerate() {
+            *c = self.finals_lm[i]
+                + state_in[*s as usize].map_or(0.0, |ts| {
+                    -self_loop_scale * tm.get_non_self_loop_log_prob(ts)
+                });
+        }
     }
 }
 
@@ -220,7 +281,13 @@ impl<'a> Builder<'a> {
         }
 
         for p in &pending {
-            let cost = -self.opts.transition_scale * p.log_prob;
+            // Emitting arcs are costed from the model by `apply_transition_probs`; only a
+            // non-emitting state's fixed topology probability is model-free.
+            let lm = if p.tid == 0 {
+                -self.opts.transition_scale * p.log_prob
+            } else {
+                0.0
+            };
             // The word label goes on the first emitting arc of the word (equivalently, the first
             // arc out of the HMM's start state, which is emitting for every topology we build).
             let (word_label, pron_label) = if p.from_state == 0 {
@@ -235,7 +302,8 @@ impl<'a> Builder<'a> {
                     word: word_label,
                     pron: pron_label,
                     next: gstate[p.dest_state],
-                    cost,
+                    cost: lm,
+                    lm,
                 },
             );
         }
@@ -369,6 +437,7 @@ pub fn build_graph(
                     pron: NO_PRON,
                     next: direct,
                     cost: neg_log(1.0 - opts.initial_silence_prob),
+                    lm: neg_log(1.0 - opts.initial_silence_prob),
                 },
             );
             hubs.push(Hub {
@@ -386,6 +455,7 @@ pub fn build_graph(
                     pron: NO_PRON,
                     next: sil_in,
                     cost: neg_log(opts.initial_silence_prob),
+                    lm: neg_log(opts.initial_silence_prob),
                 },
             );
             // The silence phone's right context is whatever pronunciation follows; silence is
@@ -444,6 +514,7 @@ pub fn build_graph(
                         pron: NO_PRON,
                         next: e,
                         cost,
+                        lm: cost,
                     },
                 );
                 entries.push((e, hub.left));
@@ -508,6 +579,7 @@ pub fn build_graph(
                                         pron: NO_PRON,
                                         next: s,
                                         cost: nonsil_after,
+                                        lm: nonsil_after,
                                     },
                                 );
                                 next_hubs.push(Hub {
@@ -526,6 +598,7 @@ pub fn build_graph(
                                         pron: NO_PRON,
                                         next: sil_in,
                                         cost: sil_after,
+                                        lm: sil_after,
                                     },
                                 );
                                 let sil_out = b.graph.add_state();
@@ -571,7 +644,8 @@ pub fn build_graph(
     }
 
     let mut graph = std::mem::take(&mut b.graph);
-    add_self_loops(&mut graph, tm, opts.self_loop_scale);
+    add_self_loops(&mut graph, tm);
+    graph.apply_transition_probs(tm, opts.transition_scale, opts.self_loop_scale);
     graph
 }
 
@@ -586,7 +660,8 @@ fn build_silence_only(b: &mut Builder<'_>) -> Graph {
         .finals
         .push((end, neg_log(b.opts.final_silence_correction)));
     let mut graph = std::mem::take(&mut b.graph);
-    add_self_loops(&mut graph, b.tm, b.opts.self_loop_scale);
+    add_self_loops(&mut graph, b.tm);
+    graph.apply_transition_probs(b.tm, b.opts.transition_scale, b.opts.self_loop_scale);
     graph
 }
 

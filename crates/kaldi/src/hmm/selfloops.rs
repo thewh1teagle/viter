@@ -97,45 +97,34 @@ pub(super) fn make_preceding_input_symbols_same_class(
     state_in
 }
 
-/// Kaldi's `AddSelfLoopsReorder` (`hmm-utils.cc:472`), run over the finished graph.
+/// The structural half of Kaldi's `AddSelfLoopsReorder` (`hmm-utils.cc:472`), run over
+/// the finished graph: add the self-loop arcs and record each state's entering
+/// transition-state. The costs — the loop's own and the `GetNonSelfLoopLogProb`
+/// rescaling of everything leaving that state — are applied by
+/// [`Graph::apply_transition_probs`], which training re-runs whenever the model's
+/// probabilities change.
 ///
 /// For every state `s`, `state_in[s]` is the transition-state of the arcs entering it (Kaldi
 /// guarantees this is unique by duplicating states in `MakePrecedingInputSymbolsSameClass`; our
 /// construction already gives at most one distinct entering transition-state per state, which is
-/// asserted in debug builds). Then, for each such state:
-///
-/// - every outgoing arc and the final-prob get `-self_loop_scale * GetNonSelfLoopLogProb(T)`
-///   added to their cost, and
-/// - a self-loop arc costing `-self_loop_scale * GetTransitionLogProb(SelfLoopOf(T))` is added.
-///
-/// This must run on the whole graph rather than per phone, because an HMM's exit state is shared
-/// with whatever follows: in the reorder convention that exit state carries the last emitting
-/// state's self-loop, and the arcs leaving it -- which belong to the *next* phone, or are the
-/// epsilon arcs of the optional-silence structure -- are the ones that get rescaled.
-pub(super) fn add_self_loops(graph: &mut Graph, tm: &TransitionModel, self_loop_scale: f32) {
+/// asserted in debug builds). In the reorder convention that state carries the entering
+/// transition's self-loop, and the arcs leaving it -- which belong to the *next* phone, or are
+/// the epsilon arcs of the optional-silence structure -- are the ones that get rescaled, so
+/// this must run on the whole graph rather than per phone.
+pub(super) fn add_self_loops(graph: &mut Graph, tm: &TransitionModel) {
     let state_in = make_preceding_input_symbols_same_class(graph, tm);
-    let n = graph.num_states();
-
-    for s in 0..n {
-        let Some(ts) = state_in[s] else { continue };
-        let scaled_non_self_loop = -self_loop_scale * tm.get_non_self_loop_log_prob(ts);
-        for a in &mut graph.states[s].arcs {
-            a.cost += scaled_non_self_loop;
-        }
-        for (fs, fc) in &mut graph.finals {
-            if *fs as usize == s {
-                *fc += scaled_non_self_loop;
-            }
-        }
-        if let Some(loop_tid) = tm.self_loop_of(ts) {
-            let cost = -self_loop_scale * tm.get_transition_log_prob(loop_tid);
+    for (s, ts) in state_in.iter().enumerate() {
+        let Some(ts) = ts else { continue };
+        if let Some(loop_tid) = tm.self_loop_of(*ts) {
             graph.states[s].arcs.push(Arc {
                 tid: loop_tid,
                 word: NO_WORD,
                 pron: NO_PRON,
                 next: s as u32,
-                cost,
+                cost: 0.0,
+                lm: 0.0,
             });
         }
     }
+    graph.set_state_in(state_in);
 }
