@@ -29,8 +29,16 @@ fn main() {
         }
     }
 
+    // Optional 3rd arg "round": emulate MFA/kalpy's np.round(wave*32768)/32768
+    // quantization before MFCC, to isolate it as an error source.
+    let mut samples = audio.samples.clone();
+    if args.get(3).map(|s| s == "round").unwrap_or(false) {
+        for s in samples.iter_mut() {
+            *s = (*s * 32768.0).round() / 32768.0;
+        }
+    }
     let computer = MfccComputer::new(MfccOptions::default());
-    let raw = computer.compute(&audio.samples);
+    let raw = computer.compute(&samples);
     dump(&format!("{prefix}.raw.bin"), &raw);
 
     let mut stats = CmvnStats::new(raw.ncols());

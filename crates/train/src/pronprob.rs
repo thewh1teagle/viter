@@ -59,6 +59,10 @@ enum Token {
         word: u32,
         pron: u32,
     },
+    /// An optional-silence interval of the CTM. MFA emits these as ordinary tokens whose word
+    /// is in `silence_words`; they are skipped by the `silence_check` but are still visible to
+    /// the neighbours' before/following tests and to the `i + 2` bigram lookup.
+    Silence,
 }
 
 /// Counts collected over the whole corpus, mirroring `PronunciationProbabilityCounter`
@@ -83,22 +87,23 @@ fn bump(m: &mut HashMap<Token, f32>, k: Token) {
 impl Counter {
     /// `_process_pronunciations` (`multiprocessing.py:1465-1500`), one utterance.
     ///
-    /// `seq` is the utterance's non-silence word tokens in order; `sil_after[i]` says whether
-    /// an optional silence was aligned between token `i` and token `i+1` (and `sil_after` has
-    /// one extra trailing entry for silence before `</s>`, plus a leading entry, handled by
-    /// the caller passing `seq`/`sil_between` already framed by the sentinels).
-    fn add_utterance(&mut self, seq: &[Token], sil_between: &[bool]) {
-        debug_assert_eq!(sil_between.len() + 1, seq.len());
+    /// `seq` is MFA's `[("<s>","")] + word_pronunciations + [("</s>","")]`, i.e. every CTM
+    /// word interval in time order *including* optional-silence intervals as [`Token::Silence`].
+    fn add_utterance(&mut self, seq: &[Token]) {
+        let n = seq.len();
         for (i, &w_p) in seq.iter().enumerate() {
-            // "if i != 0: silence_before/non_silence_before" — the gap *before* token i.
+            // `if i != 0:` — the token before decides silence_before / non_silence_before.
             if i != 0 {
-                if sil_between[i - 1] {
+                if seq[i - 1] == Token::Silence {
                     bump(&mut self.silence_before, w_p);
                 } else {
                     bump(&mut self.non_silence_before, w_p);
                 }
             }
-            // MFA skips silence words entirely; our `seq` never contains them.
+            // `silence_check`: a silence token contributes nothing of its own.
+            if w_p == Token::Silence {
+                continue;
+            }
             if let Token::Word { word, pron } = w_p {
                 *self
                     .word_pron_counts
@@ -107,22 +112,19 @@ impl Counter {
                     .entry(pron)
                     .or_insert(0.0) += 1.0;
             }
-            if matches!(w_p, Token::End) {
-                continue;
-            }
-            // The gap *after* token i, and the bigram it starts.
-            if i + 1 < seq.len() {
-                if sil_between[i] {
+            if i != n - 1 {
+                if seq[i + 1] == Token::Silence {
                     bump(&mut self.silence_following, w_p);
-                    // MFA's ngram key skips the silence word: (w_p, the token after the silence).
-                    if i + 1 < seq.len() {
-                        let e = self.ngram.entry((w_p, seq[i + 1])).or_insert((0.0, 0.0));
+                    // `if i != len - 2`: when the silence is the last token before `</s>`
+                    // there is no `i + 2`, and MFA records NO bigram at all.
+                    if i != n - 2 {
+                        let e = self.ngram.entry((w_p, seq[i + 2])).or_insert((0.0, 0.0));
                         e.0 += 1.0;
                     }
                 } else {
-                    bump(&mut self.non_silence_following, w_p);
                     let e = self.ngram.entry((w_p, seq[i + 1])).or_insert((0.0, 0.0));
                     e.1 += 1.0;
+                    bump(&mut self.non_silence_following, w_p);
                 }
             }
         }
@@ -171,8 +173,8 @@ pub fn estimate_from_intervals(
     for (slot, &u) in intervals.iter().zip(utts) {
         let Some(ia) = slot else { continue };
         let utt = &corpus.utts[u];
-        let (seq, sil) = utterance_tokens(utt, ia, silence_phone, &mut word_ids, &mut word_strs);
-        counter.add_utterance(&seq, &sil);
+        let seq = utterance_tokens(utt, ia, silence_phone, &mut word_ids, &mut word_strs);
+        counter.add_utterance(&seq);
     }
 
     finalize(corpus, &counter, &word_strs, &word_ids)
@@ -204,52 +206,68 @@ pub fn apply(probs: &LexiconProbs, word: &str, prons: &[Pronunciation]) -> Vec<P
 // Counting
 // ---------------------------------------------------------------------------
 
-/// Turn one aligned utterance into MFA's `[("<s>","")] + word_pronunciations + [("</s>","")]`
-/// sequence plus the between-token silence flags.
+/// Turn one aligned utterance into MFA's `[("<s>","")] + word_pronunciations + [("</s>","")]`.
 ///
-/// A gap carries silence when a silence-phone interval sits between the two words' intervals
-/// (`hmm::to_intervals` leaves inserted optional silence outside every word interval).
+/// MFA's `word_pronunciations` list is built from *every* word interval of the CTM, and its CTM
+/// contains an interval for each aligned optional silence. `hmm::to_intervals` leaves inserted
+/// silence outside every word interval, so the silence intervals are exactly the phone intervals
+/// with the silence phone that no word interval covers; we splice them back into the word
+/// sequence in time order, which reproduces MFA's token list structurally (adjacency), not by
+/// interval containment.
 fn utterance_tokens<'c>(
     utt: &'c viter_kaldi::types::Utterance,
     ia: &IntervalAlignment,
     silence_phone: PhoneId,
     word_ids: &mut HashMap<&'c str, u32>,
     word_strs: &mut Vec<&'c str>,
-) -> (Vec<Token>, Vec<bool>) {
-    let mut seq = vec![Token::Start];
-    let mut sil = Vec::new();
-    let mut prev_end = 0u32;
-
-    let sil_in = |from: u32, to: u32| {
-        ia.phones
+) -> Vec<Token> {
+    // The silence intervals: silence phones outside every word interval.
+    let covered = |f: u32| {
+        ia.words
             .iter()
-            .any(|p| p.phone == silence_phone && p.start_frame >= from && p.end_frame <= to)
+            .any(|w| f >= w.start_frame && f < w.end_frame)
     };
+    let mut sils: Vec<(u32, u32)> = ia
+        .phones
+        .iter()
+        .filter(|p| p.phone == silence_phone && !covered(p.start_frame))
+        .map(|p| (p.start_frame, p.end_frame))
+        .collect();
+    // Merge adjacent silence runs into one interval, as MFA's CTM has one per optional silence.
+    sils.dedup_by(|b, a| {
+        if a.1 == b.0 {
+            a.1 = b.1;
+            true
+        } else {
+            false
+        }
+    });
 
+    let mut seq = vec![Token::Start];
+    let mut si = 0usize;
     for wi in &ia.words {
+        while si < sils.len() && sils[si].0 < wi.start_frame {
+            seq.push(Token::Silence);
+            si += 1;
+        }
         let Some(text) = utt.words.get(wi.word as usize) else {
             continue;
         };
-        // Silence words themselves are never tokens (MFA: `silence_check`); they only
-        // appear as the silence that separates two word tokens, which `to_intervals`
-        // already leaves outside word intervals.
-        let next = *word_ids.entry(text.as_str()).or_insert_with(|| {
+        let id = *word_ids.entry(text.as_str()).or_insert_with(|| {
             word_strs.push(text.as_str());
             (word_strs.len() - 1) as u32
         });
-        sil.push(sil_in(prev_end, wi.start_frame));
         seq.push(Token::Word {
-            word: next,
+            word: id,
             pron: wi.pron,
         });
-        prev_end = wi.end_frame;
     }
-
-    // The final gap, before `</s>`.
-    let last = ia.phones.last().map(|p| p.end_frame).unwrap_or(prev_end);
-    sil.push(sil_in(prev_end, last));
+    while si < sils.len() {
+        seq.push(Token::Silence);
+        si += 1;
+    }
     seq.push(Token::End);
-    (seq, sil)
+    seq
 }
 
 // ---------------------------------------------------------------------------
@@ -278,31 +296,36 @@ fn finalize(
     // base.py:435: `silence_probability = format_probability(silence_count / total)`.
     let silence_probability = clamp_probability(silence_count / total);
 
-    // Every (word, pron) the lexicon lists for a word that was actually seen: MFA's
-    // `pronunciations` query, restricted to `Word.count > 0`.
+    // MFA's `pron_mapping`: every pronunciation the lexicon lists for a word that was actually
+    // observed. Only these get the "+1 smoothing" (`base.py:419-424`); a pronunciation the
+    // counter saw but that is not in `pron_mapping` keeps its raw count and still takes part in
+    // the `max_value` of `base.py:428`, but is never published.
     let mut all_prons: Vec<(u32, u32)> = Vec::new();
-    let mut lex_counts: HashMap<u32, HashMap<u32, f32>> = HashMap::new();
+    let mut in_mapping: HashMap<u32, Vec<u32>> = HashMap::new();
     for utt in &corpus.utts {
         for (w, prons) in utt.words.iter().zip(&utt.prons) {
             let Some(&wid) = word_ids.get(w.as_str()) else {
                 continue;
             };
-            if lex_counts.contains_key(&wid) {
+            if in_mapping.contains_key(&wid) {
                 continue;
             }
-            let e = lex_counts.entry(wid).or_default();
-            for pi in 0..prons.len() as u32 {
-                // base.py:419: "Add one smoothing" — every listed pronunciation starts at 1,
-                // on top of whatever the alignments counted.
-                let observed = counter
-                    .word_pron_counts
-                    .get(&wid)
-                    .and_then(|m| m.get(&pi))
-                    .copied()
-                    .unwrap_or(0.0);
-                e.insert(pi, observed + 1.0);
+            let idxs: Vec<u32> = (0..prons.len() as u32).collect();
+            for &pi in &idxs {
                 all_prons.push((wid, pi));
             }
+            in_mapping.insert(wid, idxs);
+        }
+    }
+    // `counter.word_pronunciation_counts` after smoothing.
+    let mut lex_counts: HashMap<u32, HashMap<u32, f32>> = HashMap::new();
+    for (&wid, m) in &counter.word_pron_counts {
+        lex_counts.insert(wid, m.clone());
+    }
+    for (&wid, idxs) in &in_mapping {
+        let e = lex_counts.entry(wid).or_default();
+        for &pi in idxs {
+            *e.entry(pi).or_insert(0.0) += 1.0;
         }
     }
 
@@ -436,10 +459,10 @@ fn finalize(
 mod tests {
     use super::*;
 
-    fn counter_of(seqs: &[(&[Token], &[bool])]) -> Counter {
+    fn counter_of(seqs: &[&[Token]]) -> Counter {
         let mut c = Counter::default();
-        for (s, b) in seqs {
-            c.add_utterance(s, b);
+        for s in seqs {
+            c.add_utterance(s);
         }
         c
     }
@@ -448,22 +471,50 @@ mod tests {
         Token::Word { word, pron }
     }
 
+    /// `<s> w1 sil w2 </s>`: hand-computed from `_process_pronunciations`.
     #[test]
-    fn counts_match_mfa_walk() {
-        // "<s> a b </s>" with silence between a and b only.
-        let seq = [Token::Start, w(0, 0), w(1, 0), Token::End];
-        let sil = [false, true, false];
-        let c = counter_of(&[(&seq[..], &sil[..])]);
+    fn counts_match_mfa_walk_silence_in_middle() {
+        let seq = [Token::Start, w(0, 0), Token::Silence, w(1, 0), Token::End];
+        let c = counter_of(&[&seq[..]]);
+        // before: w1 follows <s> (non-sil), sil follows w1 (non-sil), w2 follows sil (sil),
+        // </s> follows w2 (non-sil).
         assert_eq!(c.non_silence_before[&w(0, 0)], 1.0);
+        assert_eq!(c.non_silence_before[&Token::Silence], 1.0);
         assert_eq!(c.silence_before[&w(1, 0)], 1.0);
+        assert_eq!(c.non_silence_before[&Token::End], 1.0);
+        // following: <s> -> w1 non-sil; w1 -> sil; w2 -> </s> non-sil. sil itself: skipped.
+        assert_eq!(c.non_silence_following[&Token::Start], 1.0);
         assert_eq!(c.silence_following[&w(0, 0)], 1.0);
         assert_eq!(c.non_silence_following[&w(1, 0)], 1.0);
-        // <s> is never counted as a pronunciation, but it does follow-count.
-        assert!(!c.word_pron_counts.contains_key(&u32::MAX));
-        assert_eq!(c.word_pron_counts[&0][&0], 1.0);
-        // Bigram (a,b) is a silence bigram; (b,</s>) a non-silence one.
+        assert!(!c.silence_following.contains_key(&Token::Silence));
+        // ngrams: (<s>, w1) non-sil; (w1, w2) silence via `i + 2`; (w2, </s>) non-sil.
+        assert_eq!(c.ngram[&(Token::Start, w(0, 0))], (0.0, 1.0));
         assert_eq!(c.ngram[&(w(0, 0), w(1, 0))], (1.0, 0.0));
         assert_eq!(c.ngram[&(w(1, 0), Token::End)], (0.0, 1.0));
+        assert_eq!(c.ngram.len(), 3);
+        assert_eq!(c.word_pron_counts[&0][&0], 1.0);
+        assert_eq!(c.word_pron_counts[&1][&0], 1.0);
+    }
+
+    /// `<s> w1 w2 sil </s>`. The `i != len - 2` guard can only fire for a silence token that
+    /// is itself last, which the appended `</s>` sentinel makes impossible; so the bigram is
+    /// recorded, but as a *silence* bigram keyed on `word_pronunciations[i + 2] == </s>`.
+    /// That is what keeps `bar_non_silence[</s>]` small in MFA.
+    #[test]
+    fn counts_match_mfa_walk_trailing_silence() {
+        let seq = [Token::Start, w(0, 0), w(1, 0), Token::Silence, Token::End];
+        let c = counter_of(&[&seq[..]]);
+        assert_eq!(c.non_silence_before[&w(0, 0)], 1.0);
+        assert_eq!(c.non_silence_before[&w(1, 0)], 1.0);
+        assert_eq!(c.non_silence_before[&Token::Silence], 1.0);
+        // `</s>` follows the silence token, so it is a *silence* before-observation.
+        assert_eq!(c.silence_before[&Token::End], 1.0);
+        assert!(!c.non_silence_before.contains_key(&Token::End));
+        assert_eq!(c.silence_following[&w(1, 0)], 1.0);
+        assert_eq!(c.ngram[&(Token::Start, w(0, 0))], (0.0, 1.0));
+        assert_eq!(c.ngram[&(w(0, 0), w(1, 0))], (0.0, 1.0));
+        assert_eq!(c.ngram[&(w(1, 0), Token::End)], (1.0, 0.0));
+        assert_eq!(c.ngram.len(), 3);
     }
 
     #[test]
@@ -571,9 +622,10 @@ mod tests {
     fn estimate_globals_match_hand_computation() {
         let (corpus, ias) = toy_corpus();
         let probs = estimate_from_intervals(&corpus, 1, &[0, 1], &ias);
-        // Boundaries: before a (x2, both non-sil), before b (sil, non-sil),
-        // before </s> (non-sil x2)  ->  silence 1 of 6.
-        assert_eq!(probs.silence_prob, clamp_probability(1.0 / 6.0));
+        // Boundaries, MFA-style (the silence token itself takes a before-observation):
+        // u1 = <s> a sil b </s> -> before a(non), sil(non), b(sil), </s>(non);
+        // u2 = <s> a b </s>     -> before a(non), b(non), </s>(non).  1 silence of 7.
+        assert_eq!(probs.silence_prob, clamp_probability(1.0 / 7.0));
         // "a" is followed by silence once out of two: (1 + p*2) / (2 + 2).
         let pa = &probs.words["a"][0];
         assert_eq!(
@@ -596,9 +648,11 @@ mod tests {
             probs.initial_silence_prob,
             clamp_probability(isc / (isc + insc))
         );
-        // b precedes </s> twice with no silence, so the non-silence correction exceeds 1.
-        assert!(probs.final_non_silence_correction > 1.0);
-        assert!(probs.final_silence_correction <= 1.0);
+        // Hand-computed against MFA's formulas over the same walk (see the module tests
+        // above for the counts): sil_before[</s>] = 1, non_sil_before[</s>] = 1,
+        // bar_sil[</s>] = 0.07 + 0.07, bar_non_sil[</s>] = 0.93 + 0.93.
+        assert_eq!(probs.final_silence_correction, 0.93);
+        assert_eq!(probs.final_non_silence_correction, 1.04);
     }
 
     #[test]

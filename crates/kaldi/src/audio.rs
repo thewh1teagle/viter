@@ -212,7 +212,9 @@ pub fn resample(a: &Audio, target_rate: u32) -> Audio {
 
     let ratio = target_rate as f64 / a.sample_rate as f64;
     // sinc_len 256 with a BlackmanHarris2 window is rubato's recommended
-    // high-quality setting; the cutoff is then derived automatically.
+    // high-quality setting; the cutoff is then derived automatically. MFA uses
+    // librosa's soxr_hq; the two differ only in the anti-alias transition band
+    // above 7.5 kHz (see plans/parity/parity_004_feats.py).
     let params = SincInterpolationParameters {
         sinc_len: 256,
         f_cutoff: None,
@@ -271,7 +273,13 @@ pub fn resample(a: &Audio, target_rate: u32) -> Audio {
 /// Read and resample to 16 kHz, the rate every model in this project uses.
 pub fn read_16k(path: &Path) -> Result<Audio, AudioError> {
     let a = read(path)?;
-    Ok(resample(&a, 16_000))
+    let mut r = resample(&a, 16_000);
+    // kalpy hands Kaldi integer-valued samples (`np.round(wave * 32768)`), so a
+    // resampled float waveform is snapped to the int16 grid to match.
+    for s in &mut r.samples {
+        *s = (*s * 32768.0).round() / 32768.0;
+    }
+    Ok(r)
 }
 
 /// Write 16-bit PCM mono WAV.
