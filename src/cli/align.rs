@@ -101,6 +101,10 @@ pub fn run(args: AlignArgs) -> anyhow::Result<()> {
     // The model's phone inventory decides how transcripts must be tagged; a mismatched flag
     // would silently produce phones the model has never seen.
     opts.position_dependent = model.position_dependent;
+    if args.corpus_args.no_position_dependent {
+        // Explicit override, for models whose recorded flag is wrong.
+        opts.position_dependent = false;
+    }
 
     let mut corpus = if args.input.is_dir() {
         corpus::scan(&args.input, &opts)

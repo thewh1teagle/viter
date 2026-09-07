@@ -61,8 +61,14 @@ pub struct Progress {
 
 #[derive(Default)]
 struct State {
-    /// Ordered stage names for the whole run.
-    plan: Vec<String>,
+    /// Ordered stage names for the whole run, with a relative amount of work each
+    /// (iterations x utterances), so the live line can show an overall estimate.
+    plan: Vec<(String, f64)>,
+    run_started: Option<Instant>,
+    /// Work units of finished stages plus the finished fraction of the current one.
+    done_units: f64,
+    /// Fraction of the current stage completed (0..1).
+    stage_frac: f64,
     stage: String,
     stage_started: Option<Instant>,
     /// Last iteration summary of the current stage, shown on the live line and
@@ -92,10 +98,17 @@ impl Progress {
         Self { multi, live, quiet: true, state: Mutex::new(State::default()) }
     }
 
-    /// Declare the ordered list of stages for this run and print the chain once.
-    pub fn plan(&self, stages: &[&str]) {
-        self.state.lock().unwrap().plan = stages.iter().map(|s| s.to_string()).collect();
-        let chain = stages.iter().map(|s| verb(s)).collect::<Vec<_>>().join(" → ");
+    /// Declare the ordered stages for this run with their relative cost, and print
+    /// the chain once. Costs only need to be proportional (e.g. iterations x
+    /// utterances); they drive the overall `%` and `~left` on the live line.
+    pub fn plan(&self, stages: &[(&str, f64)]) {
+        {
+            let mut st = self.state.lock().unwrap();
+            st.plan = stages.iter().map(|(s, w)| (s.to_string(), w.max(1e-9))).collect();
+            st.run_started = Some(Instant::now());
+            st.done_units = 0.0;
+        }
+        let chain = stages.iter().map(|(s, _)| verb(s)).collect::<Vec<_>>().join(" → ");
         self.println(format!(
             "{:>w$} {} stages · {}",
             style("Plan").green().bold(),
@@ -115,13 +128,14 @@ impl Progress {
             st.step.clear();
         }
         let counter = self.counter(name);
+        self.state.lock().unwrap().stage_frac = 0.0;
         log_line(&format!("{:>w$} {counter}{detail}", verb(name), w = VERB_WIDTH));
         if self.quiet {
             eprintln!("{:>w$} {counter}{detail}", verb(name), w = VERB_WIDTH);
         } else {
             self.live.set_style(spin_style());
             self.live.set_prefix(verb(name).to_string());
-            self.live.set_message(format!("{counter}{}", style(detail).dim()));
+            self.live.set_message(format!("{}", style(detail).dim()));
             self.live.enable_steady_tick(Duration::from_millis(100));
         }
         tracing::debug!(stage = name, "{detail}");
@@ -131,10 +145,38 @@ impl Progress {
         let st = self.state.lock().unwrap();
         st.plan
             .iter()
-            .position(|s| s == name)
+            .position(|(s, _)| s == name)
             .map(|i| format!("[{}/{}] ", i + 1, st.plan.len()))
             .unwrap_or_default()
     }
+
+    /// Right-hand side of the live line: `stage 3/5 · 47% · ~2m left`.
+    fn overall(&self) -> String {
+        let st = self.state.lock().unwrap();
+        if st.plan.is_empty() {
+            return String::new();
+        }
+        let total: f64 = st.plan.iter().map(|(_, w)| w).sum();
+        let idx = st.plan.iter().position(|(s, _)| *s == st.stage);
+        let cur_w = idx.map(|i| st.plan[i].1).unwrap_or(0.0);
+        let done = st.done_units + cur_w * st.stage_frac;
+        let frac = (done / total).clamp(0.0, 1.0);
+        let mut out = match idx {
+            Some(i) => format!("stage {}/{}", i + 1, st.plan.len()),
+            None => String::new(),
+        };
+        out.push_str(&format!(" · {:.0}%", frac * 100.0));
+        if let Some(t0) = st.run_started
+            && frac > 0.02
+        {
+            let elapsed = t0.elapsed().as_secs_f64();
+            let left = elapsed * (1.0 - frac) / frac;
+            out.push_str(&format!(" · ~{} left", fmt_duration(Duration::from_secs_f64(left))));
+        }
+        out
+    }
+
+
 
     /// A determinate bar with `len` units of work on the live line.
     pub fn bar(&self, msg: impl Into<String>, len: u64) -> Bar {
@@ -165,13 +207,17 @@ impl Progress {
         Bar { pb: self.live.clone(), quiet: self.quiet }
     }
 
-    /// Live-line text: the sub-step plus the last iteration summary, dimmed.
+    /// Live-line text: the sub-step plus the last iteration summary, dimmed, and
+    /// the overall estimate on the right.
     fn live_message(&self, step: &str) -> String {
+        let overall = self.overall();
         let st = self.state.lock().unwrap();
-        match &st.last {
+        let left = match &st.last {
             Some(last) => format!("{step}  {}", style(last).dim()),
             None => step.to_string(),
-        }
+        };
+        drop(st);
+        format!("{left}  {}", style(overall).cyan())
     }
 
     /// One-line message printed above the live line (or plainly when piped).
@@ -192,7 +238,11 @@ impl Progress {
     /// (every fifth iteration and the last) so logs stay readable.
     pub fn iteration_summary(&self, s: &IterationSummary<'_>) {
         let short = s.render_short();
-        self.state.lock().unwrap().last = Some(short.clone());
+        {
+            let mut st = self.state.lock().unwrap();
+            st.last = Some(short.clone());
+            st.stage_frac = (s.iteration as f64 / s.num_iterations.max(1) as f64).min(1.0);
+        }
         log_line(&format!("{:>w$} {}", "", s.render_long(), w = VERB_WIDTH));
         if self.quiet {
             if s.iteration % 5 == 0 || s.iteration == s.num_iterations {
@@ -200,7 +250,8 @@ impl Progress {
             }
         } else {
             let step = self.state.lock().unwrap().step.clone();
-            self.live.set_message(format!("{step}  {}", style(&short).dim()));
+            let msg = self.live_message(&step);
+            self.live.set_message(msg);
         }
         tracing::debug!(
             stage = s.stage,
@@ -219,6 +270,10 @@ impl Progress {
         let (last, elapsed) = {
             let mut st = self.state.lock().unwrap();
             let e = st.stage_started.take().map(|t| t.elapsed());
+            if let Some(w) = st.plan.iter().find(|(s, _)| s == name).map(|(_, w)| *w) {
+                st.done_units += w;
+            }
+            st.stage_frac = 0.0;
             (st.last.take(), e)
         };
         let mut parts: Vec<String> = Vec::new();
@@ -383,7 +438,7 @@ mod tests {
     #[test]
     fn hidden_progress_does_not_panic() {
         let p = Progress::hidden();
-        p.plan(&["mono", "tri"]);
+        p.plan(&[("mono", 1.0), ("tri", 2.0)]);
         p.stage("mono", "40 iterations");
         let bar = p.bar("test", 10);
         bar.inc(5);

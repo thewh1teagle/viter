@@ -23,7 +23,7 @@ use crate::types::{PhoneId, SymbolTable};
 pub const MAGIC: &[u8; 4] = b"VITR";
 
 /// Current on-disk format version. Bump on any breaking layout change.
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
 
 /// Errors from reading or writing a `.viter` file.
 #[derive(Debug, thiserror::Error)]
@@ -199,7 +199,7 @@ mod tests {
     #[test]
     fn magic_and_version_are_the_documented_prefix() {
         assert_eq!(MAGIC, b"VITR");
-        assert_eq!(FORMAT_VERSION, 1);
+        assert_eq!(FORMAT_VERSION, 2);
     }
 
     #[test]

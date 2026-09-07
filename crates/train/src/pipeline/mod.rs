@@ -330,17 +330,27 @@ pub fn train(
     }
 
     let progress = Progress::new();
-    let mut plan = vec!["features", "mono"];
+    // Relative cost per stage: iterations x utterances in the subset (features and
+    // the final two-pass alignment count as a few passes over everything).
+    let n = corpus.utts.len();
+    let sub = |stage: Stage| match cfg.subset_for(stage, n) {
+        0 => n.max(1) as f64,
+        s => s.min(n).max(1) as f64,
+    };
+    let mut plan: Vec<(&str, f64)> = vec![
+        ("features", 2.0 * n as f64),
+        ("mono", cfg.mono.num_iterations as f64 * sub(Stage::Mono)),
+    ];
     if cfg.stages.tri {
-        plan.push("tri");
+        plan.push(("tri", cfg.tri.num_iterations as f64 * sub(Stage::Tri)));
     }
     if cfg.stages.lda {
-        plan.push("lda");
+        plan.push(("lda", cfg.lda.num_iterations as f64 * sub(Stage::Lda)));
     }
     if cfg.stages.sat {
-        plan.push("sat");
+        plan.push(("sat", 1.5 * cfg.sat.num_iterations as f64 * sub(Stage::Sat)));
     }
-    plan.push("final");
+    plan.push(("final", 4.0 * n as f64));
     progress.plan(&plan);
     progress.stage(
         "features",

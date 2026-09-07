@@ -224,7 +224,7 @@ fn init_from_stats(
         let summed = match tree::sum_stats(leaf_stats) {
             Some(s) => s,
             None => {
-                tracing::warn!(pdf = leaf, "tree leaf has no stats; using the global average");
+                tracing::debug!(pdf = leaf, "tree leaf has no stats; using the global average");
                 avg.clone()
             }
         };
@@ -280,7 +280,7 @@ fn init_from_previous(
             // No old pdf covers this leaf: fall back to its own statistics.
             None => {
                 let s = summed.or_else(|| {
-                    tracing::warn!("tree leaf has neither statistics nor a previous pdf; using the global average");
+                    tracing::debug!("tree leaf has neither statistics nor a previous pdf; using the global average");
                     Some(avg.clone())
                 }).ok_or_else(|| {
                     anyhow!("unreachable: global average stats missing")

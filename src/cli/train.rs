@@ -87,6 +87,10 @@ pub fn run(args: TrainArgs) -> anyhow::Result<()> {
     let mut cfg = TrainConfig::default();
     cfg.seed = args.seed;
     cfg.subset = !args.no_subset;
+    // The corpus was built with (or without) word-position tags; the model must record
+    // the same choice so `align` tags transcripts identically.
+    cfg.position_dependent = !args.corpus_args.no_position_dependent;
+    cfg.graph.position_dependent = cfg.position_dependent;
     if args.no_tri {
         cfg.stages.tri = false;
     }

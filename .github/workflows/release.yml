@@ -76,7 +76,7 @@ jobs:
         with:
           key: ${{ matrix.target }}
       - name: build
-        run: cargo build --release --locked --target ${{ matrix.target }} -p viter
+        run: cargo build --profile dist --locked --target ${{ matrix.target }} -p viter
       - name: package (unix)
         if: runner.os != 'Windows'
         shell: bash
@@ -84,7 +84,7 @@ jobs:
           tag="${{ github.event.release.tag_name || inputs.tag }}"
           name="viter-${tag}-${{ matrix.target }}"
           mkdir -p "dist/$name"
-          cp "target/${{ matrix.target }}/release/viter" "dist/$name/"
+          cp "target/${{ matrix.target }}/dist/viter" "dist/$name/"
           cp README.md LICENSE "dist/$name/" 2>/dev/null || cp README.md "dist/$name/"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           echo "ASSET=dist/$name.tar.gz" >> "$GITHUB_ENV"
@@ -95,7 +95,7 @@ jobs:
           $tag = "${{ github.event.release.tag_name || inputs.tag }}"
           $name = "viter-$tag-${{ matrix.target }}"
           New-Item -ItemType Directory -Force -Path "dist/$name" | Out-Null
-          Copy-Item "target/${{ matrix.target }}/release/viter.exe" "dist/$name/"
+          Copy-Item "target/${{ matrix.target }}/dist/viter.exe" "dist/$name/"
           Copy-Item README.md "dist/$name/"
           Compress-Archive -Path "dist/$name" -DestinationPath "dist/$name.zip"
           "ASSET=dist/$name.zip" | Out-File -FilePath $env:GITHUB_ENV -Append
