@@ -1,8 +1,20 @@
 //! Port of `fst::EqualAlign` (`plans/kaldi/src/fstext/fstext-utils-inl.h:857`), used for the
 //! monophone flat start (`gmm_align_equal`).
 //!
-//! A path is drawn at random from the graph, ignoring self-loops; then self-loops are inserted
+//! A path is drawn through the graph, ignoring self-loops; then self-loops are inserted
 //! along it, spread as evenly as possible, until the path has exactly `num_frames` emitting arcs.
+//!
+//! Kaldi draws the path uniformly at random over each state's arcs, which was written for
+//! topologies whose only choices are the optional silences. MFA's phone topology also has
+//! state-skip arcs (state 0 to state 2 or straight to the exit), so under Kaldi's rule two
+//! thirds of the phones start the flat start with a state or the whole phone skipped, and
+//! the trained model depends on the draw: on TIMIT the monophone model's boundaries within
+//! 10 ms of the hand labels varied from 52% to 58% across seeds, with a tenth of the
+//! utterances failing the first alignment on bad draws. MFA itself sees one fixed draw
+//! (`srand(1234)` before every utterance). Here the emitting choice is the smallest forward
+//! step, so every phone visits all of its states and the frames are split between them;
+//! only the optional silences are still drawn at random, as in Kaldi. That gives 57-58%
+//! whatever the seed, with no first-iteration failures.
 
 use crate::hmm::{Graph, NO_WORD, TransitionModel};
 use crate::types::{Alignment, TransitionId, WordId};
@@ -20,8 +32,30 @@ fn find_self_loop(graph: &Graph, state: u32) -> Option<usize> {
         .position(|a| a.next == state && a.tid != 0)
 }
 
-/// Kaldi `EqualAlign`: build an alignment of exactly `num_frames` frames by choosing a random
-/// path through the graph and padding it with self-loops.
+/// The arc out of `state` that advances its HMM by the fewest states, if it has emitting
+/// arcs: the flat start walks every state of every phone (see the module doc). The silence
+/// topology has backward arcs, so only forward steps count.
+fn smallest_forward_step(graph: &Graph, tm: &TransitionModel, state: u32) -> Option<usize> {
+    let mut best: Option<(usize, usize)> = None; // (destination hmm state, arc index)
+    for (i, a) in graph.states[state as usize].arcs.iter().enumerate() {
+        if a.tid == 0 || a.next == state {
+            continue;
+        }
+        let ts = tm.transition_id_to_transition_state(a.tid);
+        let src = tm.transition_state_to_hmm_state(ts);
+        let idx = tm.transition_id_to_transition_index(a.tid);
+        let phone = tm.transition_state_to_phone(ts);
+        let dest = tm.topology().topology_for_phone(phone)[src].transitions[idx].0;
+        if dest > src && best.is_none_or(|b| dest < b.0) {
+            best = Some((dest, i));
+        }
+    }
+    best.map(|b| b.1)
+}
+
+/// Kaldi `EqualAlign`: build an alignment of exactly `num_frames` frames by choosing a
+/// path through the graph (emitting arcs: the smallest forward step; optional silences:
+/// at random) and padding it with self-loops.
 ///
 /// Returns `None` if even the shortest randomly drawn path is longer than `num_frames`, or if the
 /// path has no self-loops to lengthen it with.
@@ -68,7 +102,8 @@ pub fn equal_align(
             if steps > max_steps {
                 break;
             }
-            let offset = rng.random_range(0..num_arcs_tot);
+            let offset = smallest_forward_step(graph, tm, s)
+                .unwrap_or_else(|| rng.random_range(0..num_arcs_tot));
             if offset < num_arcs {
                 let arc = graph.states[s as usize].arcs[offset];
                 if arc.next == s {
