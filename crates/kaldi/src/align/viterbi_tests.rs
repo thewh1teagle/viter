@@ -92,8 +92,9 @@ fn too_few_frames_fails() {
     let g = build_graph(&plain(&[&[2, 3]]), &tm, &ctx, &gopts);
     let pdfs = graph_pdfs(&g, &tm);
     let col = |p: PdfId| pdfs.iter().position(|x| *x == p).unwrap();
-    // Two Bakis phones need at least 6 frames.
-    let scores: Array2<f32> = Array2::zeros((3, pdfs.len()));
+    // Each Bakis phone can be crossed in one frame via the state-0 skip arc, so two phones need
+    // two frames; a single frame cannot be aligned.
+    let scores: Array2<f32> = Array2::zeros((1, pdfs.len()));
     assert!(align(&g, &tm, &scores, &col, &AlignOptions::default()).is_none());
 }
 

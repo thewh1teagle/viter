@@ -385,7 +385,7 @@ mod tests {
     #[test]
     fn detects_reordering() {
         let (tm, _) = setup();
-        let ali = bakis_alignment(&tm, 2, &[1, 0, 2]);
+        let ali = bakis_alignment(&tm, 2, &[0, 2, 0]);
         assert!(is_reordered(&tm, &ali));
     }
 

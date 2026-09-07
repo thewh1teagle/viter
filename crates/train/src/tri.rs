@@ -153,7 +153,9 @@ pub fn build_tree_stage(
             "no tree statistics were accumulated; the previous stage produced no alignments"
         ));
     }
-    let stats: BuildTreeStats = merged.into_iter().collect();
+    // Kaldi builds tree stats from a std::map keyed by event (tree-accu.cc:39), i.e.
+    // sorted; summation order and split tie-breaks then match run to run.
+    let stats: BuildTreeStats = tree::stats_map_to_vec(merged);
 
     // Roots: silence phones share one non-split root, every other phone (all its
     // position variants together) gets a shared, splittable root

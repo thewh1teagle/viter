@@ -115,10 +115,13 @@ pub fn accumulate_tree_stats(
     stats: &mut HashMap<EventType, GaussClusterable>,
 ) {
     opts.check();
-    let split_alignment = match split_to_phones(tm, tids) {
-        None => return, // bad alignment: Kaldi warns and skips
-        Some(s) => s,
-    };
+    // Kaldi's real SplitToPhones (hmm-utils.cc:672-700), not a state-order
+    // heuristic: MFA's 5-state silence has legal backward arcs (4 -> 2, 3 -> 1)
+    // that a "state went backwards" rule would split into spurious phone instances.
+    let (split_alignment, was_ok) = crate::hmm::split_to_phones_checked(tm, tids);
+    if !was_ok {
+        return; // bad alignment: Kaldi warns and skips (tree-accu.cc:42-45)
+    }
     assert_eq!(
         feats.nrows(),
         tids.len(),

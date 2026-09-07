@@ -236,18 +236,26 @@ fn silence_states(n: usize) -> Vec<HmmState> {
     states
 }
 
-/// MFA non-silence prototype (`dictionary/mixins.py:729-749`): Bakis left-to-right,
-/// self 0.5 / forward 0.5 on every state except the last emitting one, which has
-/// no self-loop and exits with probability 1.0 (it lasts exactly one frame).
+/// MFA non-silence prototype (`dictionary/mixins.py:713-749`, defaults
+/// `min_states = 1`, `max_states = num_non_silence_states`): state 0 has NO
+/// self-loop and fans out uniformly to states `min_states..=max_states` (the last
+/// index being the exit), so a phone may last a single frame; middle states are
+/// Bakis self 0.5 / forward 0.5; the last emitting state exits with probability 1.
+/// Verified against the topology inside MFA's exported `final.mdl`.
 fn bakis_states(n: usize) -> Vec<HmmState> {
     assert!(n >= 1, "non-silence topology needs >= 1 emitting state");
+    let (min_states, max_states) = (1usize, n);
     let mut states = Vec::with_capacity(n + 1);
     for i in 0..n {
-        if i + 1 == n {
-            states.push(HmmState::new(i as i32, vec![(i + 1, 1.0)]));
+        let transitions = if i == 0 && min_states != max_states {
+            let p = 1.0 / max_states as f32;
+            (min_states..=max_states).map(|x| (x, p)).collect()
+        } else if i + 1 == n {
+            vec![(i + 1, 1.0)]
         } else {
-            states.push(HmmState::new(i as i32, vec![(i, 0.5), (i + 1, 0.5)]));
-        }
+            vec![(i, 0.5), (i + 1, 0.5)]
+        };
+        states.push(HmmState::new(i as i32, transitions));
     }
     states.push(HmmState::new(NO_PDF, Vec::new()));
     states
@@ -300,19 +308,22 @@ mod tests {
     fn bakis_transitions() {
         let t = topo();
         let p = t.topology_for_phone(4);
-        assert_eq!(p[0].transitions, vec![(0, 0.5), (1, 0.5)]);
+        // State 0: no self-loop, uniform skips to 1, 2 and the exit (mixins.py:733-737).
+        let third = 1.0f32 / 3.0;
+        assert_eq!(p[0].transitions, vec![(1, third), (2, third), (3, third)]);
         assert_eq!(p[1].transitions, vec![(1, 0.5), (2, 0.5)]);
         // Last emitting state: no self-loop, exits with probability 1 (mixins.py:743-746).
         assert_eq!(p[2].transitions, vec![(3, 1.0)]);
-        assert_eq!(p[0].self_loop_index(0), Some(0));
+        assert_eq!(p[0].self_loop_index(0), None);
+        assert_eq!(p[1].self_loop_index(1), Some(0));
         assert_eq!(p[2].self_loop_index(2), None);
     }
 
     #[test]
     fn min_lengths() {
         let t = topo();
-        // Bakis: must pass through all 3 emitting states.
-        assert_eq!(t.min_length(3), 3);
+        // Bakis with the state-0 skip arc: 0 -> final, so a single frame suffices.
+        assert_eq!(t.min_length(3), 1);
         // Silence: 0 -> 3 -> 4 -> final, so 3 emitting frames minimum.
         assert_eq!(t.min_length(1), 3);
     }

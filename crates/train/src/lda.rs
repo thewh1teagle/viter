@@ -174,6 +174,9 @@ fn estimate_lda(
     let num_classes = m.tm.num_pdfs();
     let dim = ctx.feats.spliced_dim();
 
+    // kalpy `LdaStatsAccumulator` (feat/lda.py:44-60) passes the silence phones with
+    // `silence_weight = 0.0`: silence frames contribute nothing to the scatter.
+    let silence_pdfs: std::collections::HashSet<u32> = ctx.silence_pdfs().into_iter().collect();
     let bar = ctx.progress.bar("lda stats", utts.len() as u64);
     let acc = (0..utts.len())
         .into_par_iter()
@@ -185,6 +188,9 @@ fn estimate_lda(
                     let frames = ali.tids.len().min(spliced.nrows());
                     for t in 0..frames {
                         let pdf = m.tm.transition_id_to_pdf(ali.tids[t]);
+                        if silence_pdfs.contains(&pdf) {
+                            continue;
+                        }
                         let row = spliced.row(t);
                         let x = row.as_slice().expect("feature rows are contiguous");
                         acc.accumulate(x, pdf as usize, 1.0);
@@ -247,6 +253,8 @@ impl IterationHooks for MlltHooks {
 
         let random_prune = self.cfg.random_prune;
         let seed = ctx.cfg.seed;
+        let mllt_silence: std::collections::HashSet<u32> = ctx.silence_pdfs().into_iter().collect();
+        let mllt_silence = &mllt_silence;
         let accs = {
             let m = ctx.model();
             (0..utts.len())
@@ -265,6 +273,12 @@ impl IterationHooks for MlltHooks {
                             let mut posteriors: Vec<f32> = Vec::new();
                             for t in 0..frames {
                                 let pdf = m.tm.transition_id_to_pdf(ali.tids[t]);
+                                // kalpy MlltStatsAccumulator: silence_weight 0.0
+                                // (feat/lda.py:120-140, mllt.cc:162-169 scales the
+                                // posteriors by the weight).
+                                if mllt_silence.contains(&pdf) {
+                                    continue;
+                                }
                                 let row = f.row(t);
                                 let x = row.as_slice().expect("rows are contiguous");
                                 let gmm = m.am.pdf(pdf);

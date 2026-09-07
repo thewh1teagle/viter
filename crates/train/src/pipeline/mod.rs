@@ -653,11 +653,18 @@ fn final_alignment(ctx: &StageCtx<'_>, model: &AcousticModel) -> Result<Vec<Opti
     bar.finish();
 
     let mut store_feats = FeatureView::for_model(ctx, model, &utts);
+    // MFA's trainer aligns the corpus at the end with `boost_silence = 1.5`
+    // (`trainer.py:187`, carried into both fMLLR passes via `align_options`);
+    // a standalone `mfa align` uses 1.0, which is what `viter align` does.
+    const TRAINER_FINAL_BOOST: f32 = 1.5;
+    let silence_pdfs = model.tm.silence_pdfs(&model.silence_phones);
     let bar = ctx.progress.bar("final align", utts.len() as u64);
-    let outcome = align::align_batch(
+    let outcome = align::align_boosted(
         &graphs,
         &model.tm,
         model.am_si.as_ref().unwrap_or(&model.am),
+        &silence_pdfs,
+        TRAINER_FINAL_BOOST,
         ctx.device,
         &store_feats.feats,
         &ctx.cfg.align,
@@ -680,10 +687,12 @@ fn final_alignment(ctx: &StageCtx<'_>, model: &AcousticModel) -> Result<Vec<Opti
         )?;
         store_feats.apply_fmllr(ctx, &utts, &transforms);
         let bar = ctx.progress.bar("final align (fmllr)", utts.len() as u64);
-        let adapted = align::align_batch(
+        let adapted = align::align_boosted(
             &graphs,
             &model.tm,
             &model.am,
+            &silence_pdfs,
+            TRAINER_FINAL_BOOST,
             ctx.device,
             &store_feats.feats,
             &ctx.cfg.align,

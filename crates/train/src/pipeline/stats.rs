@@ -258,7 +258,10 @@ pub fn update_model(
 
     // Mix up to this iteration's target, allocating gaussians across pdfs by occupancy
     // (Kaldi AmDiagGmm::SplitByCount / GetSplitTargets with `power`).
-    if opts.mixup > 0 && opts.mixup > am.num_gauss() {
+    // kalpy `mle_update` (gmm.cpp:291-294) calls SplitByCount whenever mixup != 0;
+    // GetSplitTargets allocates per pdf from occupancy^power, so pdfs below their
+    // own target keep splitting even when the model total already meets `mixup`.
+    if opts.mixup > 0 {
         let occs = stats.gmm.pdf_occupancies();
         am.split_by_count(
             &occs,

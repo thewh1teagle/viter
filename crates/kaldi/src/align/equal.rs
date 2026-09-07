@@ -86,9 +86,14 @@ pub fn equal_align(
         attempted.push(num_ilabels);
 
         // Kaldi retries while the drawn path is too long. A path that ran into a dead end rather
-        // than a final state is unusable, so it is retried too.
+        // than a final state is unusable, so it is retried too. Under the MFA non-silence
+        // topology the first state of a phone has a skip arc straight to the phone exit, so a
+        // drawn path can also be too *short* to pad: if it visits no state carrying a self-loop
+        // it cannot be stretched to `num_frames`, and that is worth another draw as well.
         ended_final = path.last().is_some_and(|&s| graph.is_final(s));
-        if ended_final && num_ilabels <= num_frames {
+        let paddable =
+            num_ilabels == num_frames || path.iter().any(|&s| find_self_loop(graph, s).is_some());
+        if ended_final && num_ilabels <= num_frames && paddable {
             break;
         }
     }
@@ -246,14 +251,14 @@ mod tests {
         let mut rng = Xoshiro256PlusPlus::seed_from_u64(3);
         let ali = equal_align(&g, &tm, 60, &mut rng).unwrap();
         let runs = crate::hmm::split_to_phones(&tm, &ali.tids);
-        // Six emitting states share 60 frames; each run holds three states, so each phone should
-        // get roughly half.
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs.iter().map(|r| r.len()).sum::<usize>(), 60);
+        // The padding is spread evenly over the self-loop-bearing states on the drawn path, but
+        // under the MFA topology the skip arc out of state 0 means the two phones need not carry
+        // the same number of such states, so only a loose balance is guaranteed: no phone may be
+        // starved of frames.
         for r in &runs {
-            assert!(
-                r.len() >= 20 && r.len() <= 40,
-                "phone run length {} is far from equal",
-                r.len()
-            );
+            assert!(r.len() >= 2, "phone run length {} is too short", r.len());
         }
     }
 
@@ -262,8 +267,9 @@ mod tests {
         let (tm, ctx, gopts) = setup();
         let g = build_graph(&plain(&[&[2, 3]]), &tm, &ctx, &gopts);
         let mut rng = Xoshiro256PlusPlus::seed_from_u64(5);
-        // Two Bakis phones need six emitting arcs.
-        assert!(equal_align(&g, &tm, 3, &mut rng).is_none());
+        // Under the MFA topology each Bakis phone can be traversed in a single emitting arc via
+        // the state-0 skip, so two phones need two frames; one frame is impossible.
+        assert!(equal_align(&g, &tm, 1, &mut rng).is_none());
     }
 
     #[test]

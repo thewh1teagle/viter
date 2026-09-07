@@ -573,8 +573,8 @@ mod tests {
     #[test]
     fn ids_are_contiguous_and_one_based() {
         let (_, _, tm) = setup();
-        // Bakis phones contribute 2 ids per state except the last emitting one, which has
-        // only its forward transition: 2 phones * (2 + 2 + 1) = 10. Silence: 4/4/4/4/2 = 18.
+        // Bakis phones: state 0 has 3 skip arcs, state 1 has 2, the last emitting state has
+        // only its forward transition: 2 phones * (3 + 2 + 1) = 12. Silence: 4/4/4/4/2 = 18.
         let expected: usize = tm
             .tuples()
             .iter()
@@ -584,7 +584,7 @@ mod tests {
                     .len()
             })
             .sum();
-        assert_eq!(expected, 10 + 18);
+        assert_eq!(expected, 12 + 18);
         assert_eq!(tm.num_transition_ids(), expected);
         assert_eq!(tm.state2id[1], 1);
     }
@@ -592,11 +592,25 @@ mod tests {
     #[test]
     fn self_loop_and_final_flags() {
         let (_, _, tm) = setup();
-        // Find the Bakis phone 2, state 0.
-        let ts = tm
+        // Bakis phone 2, state 0: no self-loop, three skip arcs to 1, 2 and the final state 3.
+        let ts0 = tm
             .tuples()
             .iter()
             .position(|t| t.phone == 2 && t.hmm_state == 0)
+            .unwrap() as u32
+            + 1;
+        assert_eq!(tm.self_loop_of(ts0), None);
+        assert_eq!(tm.num_transition_indices(ts0), 3);
+        assert!(!tm.is_final(tm.pair_to_transition_id(ts0, 0)));
+        assert!(!tm.is_final(tm.pair_to_transition_id(ts0, 1)));
+        // The third arc goes straight to the final state 3.
+        assert!(tm.is_final(tm.pair_to_transition_id(ts0, 2)));
+
+        // State 1 is the Bakis state with a self-loop.
+        let ts = tm
+            .tuples()
+            .iter()
+            .position(|t| t.phone == 2 && t.hmm_state == 1)
             .unwrap() as u32
             + 1;
         let loop_tid = tm.self_loop_of(ts).unwrap();
@@ -604,7 +618,7 @@ mod tests {
         assert!(!tm.is_final(loop_tid));
         let fwd = tm.pair_to_transition_id(ts, 1);
         assert!(!tm.is_self_loop(fwd));
-        // 0 -> 1 is not the final state (which is index 3).
+        // 1 -> 2 is not the final state (which is index 3).
         assert!(!tm.is_final(fwd));
 
         let ts_last = tm
@@ -625,7 +639,7 @@ mod tests {
         let ts = tm
             .tuples()
             .iter()
-            .position(|t| t.phone == 2 && t.hmm_state == 0)
+            .position(|t| t.phone == 2 && t.hmm_state == 1)
             .unwrap() as u32
             + 1;
         let loop_tid = tm.self_loop_of(ts).unwrap();
@@ -657,7 +671,7 @@ mod tests {
         let ts = tm
             .tuples()
             .iter()
-            .position(|t| t.phone == 2 && t.hmm_state == 0)
+            .position(|t| t.phone == 2 && t.hmm_state == 1)
             .unwrap() as u32
             + 1;
         let loop_tid = tm.self_loop_of(ts).unwrap();
@@ -683,7 +697,7 @@ mod tests {
         let ts = tm
             .tuples()
             .iter()
-            .position(|t| t.phone == 2 && t.hmm_state == 0)
+            .position(|t| t.phone == 2 && t.hmm_state == 1)
             .unwrap() as u32
             + 1;
         let loop_tid = tm.self_loop_of(ts).unwrap();
