@@ -9,8 +9,26 @@
 
 use console::style;
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
+use std::io::Write;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
+
+/// Optional plain-text log every `Progress` appends to (stage lines, every
+/// iteration, warnings), ANSI-free. Set once from the CLI (`--log FILE`).
+static LOG: Mutex<Option<std::fs::File>> = Mutex::new(None);
+
+/// Route a copy of all progress output to `path` (appended, no colors).
+pub fn set_log_file(path: &std::path::Path) -> std::io::Result<()> {
+    let f = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+    *LOG.lock().unwrap() = Some(f);
+    Ok(())
+}
+
+fn log_line(text: &str) {
+    if let Some(f) = LOG.lock().unwrap().as_mut() {
+        let _ = writeln!(f, "{}", console::strip_ansi_codes(text));
+    }
+}
 
 const LIVE_TEMPLATE: &str =
     "{prefix:>12.green.bold} {msg} {bar:24.cyan/dim} {pos}/{len} {elapsed_precise:.dim}";
@@ -97,6 +115,7 @@ impl Progress {
             st.step.clear();
         }
         let counter = self.counter(name);
+        log_line(&format!("{:>w$} {counter}{detail}", verb(name), w = VERB_WIDTH));
         if self.quiet {
             eprintln!("{:>w$} {counter}{detail}", verb(name), w = VERB_WIDTH);
         } else {
@@ -161,6 +180,7 @@ impl Progress {
     }
 
     fn println(&self, text: String) {
+        log_line(&text);
         if self.quiet {
             eprintln!("{text}");
         } else {
@@ -173,6 +193,7 @@ impl Progress {
     pub fn iteration_summary(&self, s: &IterationSummary<'_>) {
         let short = s.render_short();
         self.state.lock().unwrap().last = Some(short.clone());
+        log_line(&format!("{:>w$} {}", "", s.render_long(), w = VERB_WIDTH));
         if self.quiet {
             if s.iteration % 5 == 0 || s.iteration == s.num_iterations {
                 eprintln!("{:>w$} {}", "", s.render_long(), w = VERB_WIDTH);

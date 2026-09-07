@@ -45,6 +45,26 @@ pub struct AlignArgs {
     #[arg(long, value_name = "F")]
     pub acoustic_scale: Option<f32>,
 
+    /// Boost silence pdf weights during alignment (MFA align default 1.0)
+    #[arg(long, value_name = "F")]
+    pub boost_silence: Option<f32>,
+
+    /// Global probability of optional silence between words (MFA default 0.5)
+    #[arg(long, value_name = "P")]
+    pub silence_prob: Option<f32>,
+
+    /// Probability of silence at the start of an utterance (MFA default 0.5)
+    #[arg(long, value_name = "P")]
+    pub initial_silence_prob: Option<f32>,
+
+    /// Multiplier on ending with silence (MFA default 1.0)
+    #[arg(long, value_name = "F")]
+    pub final_silence_correction: Option<f32>,
+
+    /// Multiplier on ending without silence (MFA default 1.0)
+    #[arg(long, value_name = "F")]
+    pub final_non_silence_correction: Option<f32>,
+
     /// Also write a CTM file next to the TextGrids
     #[arg(long)]
     pub ctm: bool,
@@ -52,9 +72,17 @@ pub struct AlignArgs {
     /// Force CPU scoring even when a GPU is available
     #[arg(long)]
     pub cpu: bool,
+
+    /// Append a plain-text copy of the progress output (every iteration) to this file
+    #[arg(long, value_name = "FILE")]
+    pub log: Option<std::path::PathBuf>,
 }
 
 pub fn run(args: AlignArgs) -> anyhow::Result<()> {
+    if let Some(log) = &args.log {
+        viter_train::pipeline::progress::set_log_file(log)
+            .map_err(|e| anyhow::anyhow!("cannot open log file {}: {e}", log.display()))?;
+    }
     let started = Instant::now();
 
     // --- model ------------------------------------------------------------
@@ -105,7 +133,13 @@ pub fn run(args: AlignArgs) -> anyhow::Result<()> {
     // --- align ------------------------------------------------------------
     header("Aligning");
     let device = super::device(args.cpu);
-    field("device", format!("{:?}", device.kind()));
+    field(
+        "device",
+        match device.adapter_name() {
+            Some(n) => format!("{:?} · {n}", device.kind()),
+            None => format!("{:?}", device.kind()),
+        },
+    );
 
     let align_opts = align_options(&args);
     if let Some(o) = &align_opts {
@@ -115,7 +149,14 @@ pub fn run(args: AlignArgs) -> anyhow::Result<()> {
 
     let audio_seconds = super::corpus_audio_seconds(&corpus.utts);
 
-    let results = viter_train::pipeline::align_corpus(&corpus, &model, &device, align_opts.as_ref())
+    let overrides = viter_train::pipeline::AlignOverrides {
+        silence_prob: args.silence_prob,
+        initial_silence_prob: args.initial_silence_prob,
+        final_silence_correction: args.final_silence_correction,
+        final_non_silence_correction: args.final_non_silence_correction,
+        boost_silence: args.boost_silence,
+    };
+    let results = viter_train::pipeline::align_corpus_with(&corpus, &model, &device, align_opts.as_ref(), &overrides)
         .context("alignment failed")?;
     anyhow::ensure!(
         results.len() == corpus.utts.len(),

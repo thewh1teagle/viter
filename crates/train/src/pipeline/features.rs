@@ -109,7 +109,7 @@ impl FeatureStore {
         let dim0 = base.first().map(|f| f.ncols()).unwrap_or(0);
         // Base + deltas (3x) + splice (7x) is the worst case held at once.
         let est_bytes = total_frames * dim0 * 4 * (1 + 3 + 7);
-        tracing::info!(
+        tracing::debug!(
             utterances = base.len(),
             frames = total_frames,
             hours = total_frames as f64 / 360_000.0,

@@ -55,9 +55,17 @@ pub struct TrainArgs {
     /// Force CPU scoring even when a GPU is available
     #[arg(long)]
     pub cpu: bool,
+
+    /// Append a plain-text copy of the progress output (every iteration) to this file
+    #[arg(long, value_name = "FILE")]
+    pub log: Option<std::path::PathBuf>,
 }
 
 pub fn run(args: TrainArgs) -> anyhow::Result<()> {
+    if let Some(log) = &args.log {
+        viter_train::pipeline::progress::set_log_file(log)
+            .map_err(|e| anyhow::anyhow!("cannot open log file {}: {e}", log.display()))?;
+    }
     let started = Instant::now();
 
     // --- corpus -----------------------------------------------------------
@@ -85,8 +93,9 @@ pub fn run(args: TrainArgs) -> anyhow::Result<()> {
     if args.no_tri || args.no_lda {
         cfg.stages.lda = false;
     }
-    if args.no_tri || args.no_lda || args.no_sat {
-        // SAT trains on LDA features, so it cannot run without the LDA stage.
+    if args.no_tri || args.no_sat {
+        // SAT needs a triphone model; without LDA it trains on delta features,
+        // which is what MFA 3.x exports by default (`uses_splices: false`).
         cfg.stages.sat = false;
     }
 
@@ -94,7 +103,13 @@ pub fn run(args: TrainArgs) -> anyhow::Result<()> {
 
     header("Training");
     field("stages", stage_list(&cfg));
-    field("device", format!("{:?}", device.kind()));
+    field(
+        "device",
+        match device.adapter_name() {
+            Some(n) => format!("{:?} · {n}", device.kind()),
+            None => format!("{:?}", device.kind()),
+        },
+    );
     field("seed", cfg.seed);
 
     // Measuring total audio up front doubles as a decode check of every file.

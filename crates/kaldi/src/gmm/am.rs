@@ -18,6 +18,8 @@ use crate::types::PdfId;
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AmDiagGmm {
     pdfs: Vec<DiagGmm>,
+    /// Never serialized: a loaded model gets a fresh unique number.
+    #[serde(skip, default = "next_version")]
     version: u64,
     /// Cache of `packed()`, tagged with the version it was built from. Not part of
     /// the serialised model: it is pure derived data.
@@ -50,11 +52,21 @@ impl Default for AmDiagGmm {
 /// Cloning carries the model and its version but shares no cache: the clone will
 /// rebuild its packed matrix on first use. `Mutex` is not `Clone`, so this is
 /// written by hand rather than derived.
+/// Process-wide version counter: every model instance and every mutation gets a
+/// number no other instance has ever had, so caches keyed by version (the GPU's
+/// resident packed model) can never confuse two models.
+fn next_version() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 impl Clone for AmDiagGmm {
     fn clone(&self) -> Self {
         AmDiagGmm {
             pdfs: self.pdfs.clone(),
-            version: self.version,
+            // A clone is a different model as far as device caches are concerned:
+            // it must never share a version with its source.
+            version: next_version(),
             packed_cache: Mutex::new(None),
         }
     }
@@ -64,7 +76,7 @@ impl AmDiagGmm {
     pub fn new() -> Self {
         AmDiagGmm {
             pdfs: Vec::new(),
-            version: 0,
+            version: next_version(),
             packed_cache: Mutex::new(None),
         }
     }
@@ -76,7 +88,7 @@ impl AmDiagGmm {
         assert!(num_pdfs > 0, "AmDiagGmm::init needs at least one pdf");
         AmDiagGmm {
             pdfs: vec![proto.clone(); num_pdfs],
-            version: 0,
+            version: next_version(),
             packed_cache: Mutex::new(None),
         }
     }
@@ -128,7 +140,7 @@ impl AmDiagGmm {
 
     /// Increment the version and drop the packed cache.
     fn bump(&mut self) {
-        self.version = self.version.wrapping_add(1);
+        self.version = next_version();
         // `&mut self` means no other reader can hold the lock.
         if let Ok(mut guard) = self.packed_cache.lock() {
             *guard = None;

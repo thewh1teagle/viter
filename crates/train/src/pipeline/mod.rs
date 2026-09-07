@@ -355,6 +355,18 @@ pub fn train(
         cfg.lda.splice_right,
         &progress,
     )?;
+    let total_frames: usize = (0..corpus.utts.len()).map(|i| feats.num_frames(i)).sum();
+    progress.stage_done(
+        "features",
+        &format!(
+            "{} utterances · {:.1} h · {} speaker{} · {} dims",
+            corpus.utts.len(),
+            total_frames as f64 * feats.frame_shift_s() as f64 / 3600.0,
+            corpus.speakers.len(),
+            if corpus.speakers.len() == 1 { "" } else { "s" },
+            cfg.mfcc.num_ceps
+        ),
+    );
 
     let mut ctx = StageCtx {
         corpus,
@@ -561,6 +573,31 @@ pub fn align_corpus(
     device: &Device,
     opts: Option<&AlignOptions>,
 ) -> Result<Vec<Option<IntervalAlignment>>> {
+    align_corpus_with(corpus, model, device, opts, &AlignOverrides::default())
+}
+
+/// Align-time knobs that are not part of the model: MFA's global silence
+/// probabilities (`silence_probability`, `initial_silence_probability`,
+/// `final_silence_correction`, `final_non_silence_correction`, learned during
+/// its pronunciation-probability stage and stored in the model meta) and the
+/// silence boost applied to the acoustic model during alignment.
+#[derive(Clone, Debug, Default)]
+pub struct AlignOverrides {
+    pub silence_prob: Option<f32>,
+    pub initial_silence_prob: Option<f32>,
+    pub final_silence_correction: Option<f32>,
+    pub final_non_silence_correction: Option<f32>,
+    /// 1.0 = no boost (MFA's align default).
+    pub boost_silence: Option<f32>,
+}
+
+pub fn align_corpus_with(
+    corpus: &Corpus,
+    model: &AcousticModel,
+    device: &Device,
+    opts: Option<&AlignOptions>,
+    over: &AlignOverrides,
+) -> Result<Vec<Option<IntervalAlignment>>> {
     if corpus.utts.is_empty() {
         return Ok(Vec::new());
     }
@@ -569,11 +606,25 @@ pub fn align_corpus(
 
     progress.stage("align", &format!("{} utterances", corpus.utts.len()));
 
+    let mut graph = model.graph_opts.clone();
+    if let Some(v) = over.silence_prob {
+        graph.silence_prob = v;
+    }
+    if let Some(v) = over.initial_silence_prob {
+        graph.initial_silence_prob = v;
+    }
+    if let Some(v) = over.final_silence_correction {
+        graph.final_silence_correction = v;
+    }
+    if let Some(v) = over.final_non_silence_correction {
+        graph.final_non_silence_correction = v;
+    }
+    let boost = over.boost_silence.unwrap_or(1.0);
     let cfg = TrainConfig {
         mfcc: model.mfcc.clone(),
         deltas: model.deltas.clone().unwrap_or_default(),
         align: align_opts.clone(),
-        graph: model.graph_opts.clone(),
+        graph,
         ..TrainConfig::default()
     };
     let (sl, sr) = model.splice.unwrap_or((cfg.lda.splice_left, cfg.lda.splice_right));
@@ -614,11 +665,14 @@ pub fn align_corpus(
 
     // Pass 1: speaker-independent model if we have one, else the single model.
     let first_model = model.am_si.as_ref().unwrap_or(&model.am);
+    let silence_pdfs = model.tm.silence_pdfs(&model.silence_phones);
     let bar = progress.bar("align", utts.len() as u64);
-    let mut outcome = align::align_batch(
+    let mut outcome = align::align_boosted(
         &graphs,
         &model.tm,
         first_model,
+        &silence_pdfs,
+        boost,
         device,
         &view.feats,
         &align_opts,
@@ -644,10 +698,12 @@ pub fn align_corpus(
         )?;
         view.apply_fmllr(&ctx, &utts, &transforms);
         let bar = progress.bar("align (fmllr)", utts.len() as u64);
-        outcome = align::align_batch(
+        outcome = align::align_boosted(
             &graphs,
             &model.tm,
             &model.am,
+            &silence_pdfs,
+            boost,
             device,
             &view.feats,
             &align_opts,

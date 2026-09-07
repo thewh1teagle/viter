@@ -53,7 +53,7 @@ pub fn init_logging() -> anyhow::Result<()> {
     // bars and per-iteration summaries are printed by the train pipeline itself,
     // so INFO tracing would only duplicate them. `RUST_LOG=info` or `debug` for more.
     let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("warn,viter_kaldi::device=info,viter_train=info"));
+        .unwrap_or_else(|_| EnvFilter::new("warn"));
     // VITER_TIMING=1 stamps every log line with seconds since start, which
     // is the cheapest way to see where a run spends its time (`RUST_LOG=debug`).
     let timing = std::env::var_os("VITER_TIMING").is_some();
