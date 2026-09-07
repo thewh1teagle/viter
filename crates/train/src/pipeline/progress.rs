@@ -444,6 +444,54 @@ fn live_text(st: &State, step: &str, inner: Option<(u64, u64)>) -> String {
 
 /// Handle on the live line for one step. Dropping it leaves the line in place;
 /// the next step or `stage_done` replaces it.
+/// One iteration step spanning several chunks.
+///
+/// Chunked passes interleave two steps (align, accumulate) over the same chunk
+/// loop, and all of `Progress`'s bars share one live line, so a step cannot hold a
+/// bar open across chunks. A phase instead makes a fresh bar per chunk and restores
+/// how far earlier chunks got, keeping the displayed total at the whole subset.
+pub struct IterPhase<'p> {
+    progress: &'p Progress,
+    stage: String,
+    iter: usize,
+    total: usize,
+    step: &'static str,
+    len: u64,
+    done: u64,
+}
+
+impl<'p> IterPhase<'p> {
+    pub fn new(
+        progress: &'p Progress,
+        stage: &str,
+        iter: usize,
+        total: usize,
+        step: &'static str,
+        len: u64,
+    ) -> Self {
+        Self {
+            progress,
+            stage: stage.to_string(),
+            iter,
+            total,
+            step,
+            len,
+            done: 0,
+        }
+    }
+    /// A bar for the next chunk, positioned where the previous chunk left off.
+    pub fn bar(&self) -> Bar {
+        let bar = self
+            .progress
+            .iter_bar(&self.stage, self.iter, self.total, self.step, self.len);
+        bar.inc(self.done);
+        bar
+    }
+    pub fn done(&mut self, n: u64) {
+        self.done += n;
+    }
+}
+
 pub struct Bar {
     pb: ProgressBar,
     quiet: bool,

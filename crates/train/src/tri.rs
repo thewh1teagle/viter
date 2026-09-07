@@ -39,8 +39,6 @@ pub fn run(ctx: &mut StageCtx<'_>, cfg: &TriConfig) -> Result<StageOutput> {
         ),
     );
 
-    let feats = ctx.feats.feats_for_many(&utts, FeatureKind::Deltas);
-
     // Alignments from the previous stage, restricted to this stage's utterances.
     // Align this stage's (larger) subset with the previous stage's model, like MFA.
     let prev_alignments: Vec<Option<Alignment>> =
@@ -50,7 +48,7 @@ pub fn run(ctx: &mut StageCtx<'_>, cfg: &TriConfig) -> Result<StageOutput> {
         ctx,
         &utts,
         &prev_alignments,
-        &feats,
+        &|c, u| c.feats.feats_for_many(u, FeatureKind::Deltas),
         &TreeSetup {
             num_leaves: cfg.num_leaves,
             thresh: cfg.tree_thresh,
@@ -68,7 +66,6 @@ pub fn run(ctx: &mut StageCtx<'_>, cfg: &TriConfig) -> Result<StageOutput> {
         setup,
         prev_alignments,
         &utts,
-        feats,
         &mut IterationPlan {
             stage: Stage::Tri,
             num_iterations: cfg.num_iterations,
@@ -118,7 +115,7 @@ pub fn build_tree_stage(
     ctx: &StageCtx<'_>,
     utts: &[usize],
     alignments: &[Option<Alignment>],
-    feats: &[Feats],
+    derive: &dyn Fn(&StageCtx<'_>, &[usize]) -> Vec<Feats>,
     setup: &TreeSetup,
 ) -> Result<TreeStageSetup> {
     let m = ctx.model();
@@ -132,6 +129,13 @@ pub fn build_tree_stage(
         ci_phones: ctx.silence_phones.clone(),
     };
 
+    // Not chunked, deliberately. Tree statistics run once per stage rather than per
+    // iteration, so their transient is short-lived, and the summation is f64 into a
+    // `GaussClusterable` whose values decide the tree's split tie-breaks: chunking
+    // changes the reduction order and with it the tree, which is not an acceptable
+    // trade for a one-off allocation. The derived view is therefore built for the
+    // whole stage subset here.
+    let feats = derive(ctx, utts);
     let bar = ctx.progress.bar("tree stats", utts.len() as u64);
     let merged: HashMap<EventType, GaussClusterable> = (0..utts.len())
         .into_par_iter()
@@ -147,6 +151,7 @@ pub fn build_tree_stage(
             a
         });
     bar.finish();
+    drop(feats);
 
     if merged.is_empty() {
         return Err(anyhow!(
@@ -341,7 +346,6 @@ fn install_and_train(
     setup: TreeStageSetup,
     prev_alignments: Vec<Option<Alignment>>,
     utts: &[usize],
-    feats: Vec<Feats>,
     plan: &mut IterationPlan<'_>,
 ) -> Result<Vec<Option<Alignment>>> {
     // Convert alignments before replacing the model: the conversion needs both.
@@ -404,16 +408,8 @@ fn install_and_train(
     };
     bar.finish();
 
-    let rebuild = |c: &StageCtx<'_>, u: &[usize]| c.feats.feats_for_many(u, FeatureKind::Deltas);
-    run_iterations(
-        ctx,
-        plan,
-        &mut NoHooks,
-        feats,
-        &rebuild,
-        &mut graphs,
-        converted,
-    )
+    let derive = |c: &StageCtx<'_>, u: &[usize]| c.feats.feats_for_many(u, FeatureKind::Deltas);
+    run_iterations(ctx, plan, &mut NoHooks, &derive, &mut graphs, converted)
 }
 
 /// Groups of phones sharing a tree root: all position variants of one base phone.

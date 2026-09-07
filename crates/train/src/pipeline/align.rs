@@ -74,6 +74,52 @@ impl GraphSet {
     pub fn pdfs(&self, i: usize) -> &[PdfId] {
         &self.pdfs[i]
     }
+
+    /// A borrowed window onto a consecutive run of this set's graphs.
+    ///
+    /// Chunked passes build the graphs once for a whole stage subset (they are small
+    /// next to derived features) and hand each chunk its own window, so no graph is
+    /// ever copied or rebuilt.
+    pub fn slice(&self, start: usize, end: usize) -> GraphSlice<'_> {
+        assert!(
+            start <= end && end <= self.graphs.len(),
+            "graph slice out of range"
+        );
+        GraphSlice {
+            set: self,
+            start,
+            end,
+        }
+    }
+}
+
+/// A consecutive window onto a [`GraphSet`], indexed from zero.
+#[derive(Clone, Copy)]
+pub struct GraphSlice<'a> {
+    set: &'a GraphSet,
+    start: usize,
+    end: usize,
+}
+
+impl<'a> From<&'a GraphSet> for GraphSlice<'a> {
+    fn from(set: &'a GraphSet) -> Self {
+        set.slice(0, set.len())
+    }
+}
+
+impl GraphSlice<'_> {
+    pub fn len(&self) -> usize {
+        self.end - self.start
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    pub fn graph(&self, i: usize) -> &Graph {
+        self.set.graph(self.start + i)
+    }
+    pub fn pdfs(&self, i: usize) -> &[PdfId] {
+        self.set.pdfs(self.start + i)
+    }
 }
 
 /// Result of realigning a stage's utterance list.
@@ -99,8 +145,8 @@ impl AlignOutcome {
 /// Scoring is batched: utterances are processed in chunks of `batch`, and each chunk
 /// asks the device for one score matrix over the union of that chunk's graph pdfs.
 /// The per-utterance Viterbi then runs in parallel over the chunk.
-pub fn align_batch(
-    graphs: &GraphSet,
+pub fn align_batch<'g>(
+    graphs: impl Into<GraphSlice<'g>>,
     tm: &TransitionModel,
     am: &AmDiagGmm,
     device: &Device,
@@ -109,6 +155,7 @@ pub fn align_batch(
     batch: usize,
     bar: &Bar,
 ) -> AlignOutcome {
+    let graphs: GraphSlice<'_> = graphs.into();
     assert_eq!(
         graphs.len(),
         feats.len(),
@@ -170,8 +217,8 @@ pub fn align_batch(
 /// MFA boosts silence only for alignment, never for accumulation
 /// (`acoustic_modeling/base.py` align_options -> kalpy `gmm.cpp:203 boost_silence`,
 /// undone by scaling with 1/boost).
-pub fn align_boosted(
-    graphs: &GraphSet,
+pub fn align_boosted<'g>(
+    graphs: impl Into<GraphSlice<'g>> + Copy,
     tm: &TransitionModel,
     am: &AmDiagGmm,
     silence_pdfs: &[PdfId],

@@ -7,8 +7,11 @@
 //! modules.
 
 pub mod align;
+pub mod chunk;
 pub mod features;
+pub mod full_pass;
 pub mod inmem;
+pub mod iterate;
 pub mod progress;
 pub mod refine;
 pub mod stats;
@@ -16,25 +19,24 @@ pub mod stats;
 use anyhow::{Context, Result, anyhow};
 use rand::SeedableRng;
 use rand_xoshiro::Xoshiro256PlusPlus;
-use rayon::prelude::*;
 use std::path::Path;
-use std::time::Instant;
 use viter_io::corpus::Corpus;
-use viter_kaldi::align::AlignOptions;
 use viter_kaldi::device::Device;
 use viter_kaldi::gmm::AmDiagGmm;
-use viter_kaldi::hmm::{self, ContextDependency, HmmTopology, TransitionModel};
+use viter_kaldi::hmm::{ContextDependency, HmmTopology, TransitionModel};
 use viter_kaldi::model::AcousticModel;
 use viter_kaldi::transform::Mat;
-use viter_kaldi::types::{Alignment, Feats, IntervalAlignment, PdfId, PhoneId, Pronunciation};
+use viter_kaldi::types::{Alignment, PdfId, PhoneId, Pronunciation};
 
 pub use align::{AlignOutcome, GraphSet};
 pub use features::{FeatureKind, FeatureStore};
+pub use full_pass::{AlignOverrides, align_corpus, align_corpus_with, align_subset_with_previous};
 pub use inmem::align_corpus_with_audio;
+pub use iterate::{IterationHooks, IterationPlan, NoHooks, run_iterations};
 pub use progress::{IterationSummary, Progress};
 pub use stats::{Stats, UpdateOptions};
 
-use crate::config::{GaussianSchedule, Stage, StageSpec, TrainConfig};
+use crate::config::{StageSpec, TrainConfig};
 use crate::{lda, mono, pronprob, sat, tri};
 
 /// Result of a training run.
@@ -134,208 +136,12 @@ impl<'a> StageCtx<'a> {
     }
 }
 
-/// MFA aligns every stage's subset with the *previous* stage's final model before
-/// training starts (`trainer.py:592-604`: `self.current_aligner = previous; self.align()`).
-/// Subsets grow (2000 -> 5000 -> 10000), so utterances new to this stage have no
-/// alignment yet; utterances already aligned are re-aligned too, exactly like MFA.
-pub fn align_subset_with_previous(
-    ctx: &StageCtx<'_>,
-    utts: &[usize],
-) -> Result<Vec<Option<Alignment>>> {
-    let m = ctx.model();
-    let kind = match m.lda.as_ref() {
-        Some(lda) => FeatureKind::SpliceLda(lda),
-        None => FeatureKind::Deltas,
-    };
-    let feats = ctx.feats.feats_for_many(utts, kind);
-    let bar = ctx.progress.bar("graphs", utts.len() as u64);
-    let graphs = GraphSet::build(
-        utts.len(),
-        |i| ctx.words_of(utts[i]),
-        &m.tm,
-        &m.ctx,
-        &ctx.graph,
-        &bar,
-    );
-    bar.finish();
-    let bar = ctx
-        .progress
-        .bar("align (previous model)", utts.len() as u64);
-    // Alignment workflows use MFA's align defaults: boost_silence 1.0 (`alignment/mixins.py:69-91`).
-    // With a SAT model the speaker-independent alignment model is the one that works
-    // on unadapted features (MFA aligns with `final.alimdl`).
-    let outcome = align::align_batch(
-        &graphs,
-        &m.tm,
-        m.am_si.as_ref().unwrap_or(&m.am),
-        ctx.device,
-        &feats,
-        &ctx.cfg.align,
-        ctx.cfg.batch_utts,
-        &bar,
-    );
-    bar.finish();
-    if outcome.failed > 0 {
-        ctx.progress.warn(format!(
-            "{} of {} utterances failed to align with the previous model",
-            outcome.failed,
-            utts.len()
-        ));
-    }
-    Ok(outcome.alignments)
-}
-
 /// Output every stage returns.
 pub struct StageOutput {
     /// Utterance indices this stage trained on.
     pub utts: Vec<usize>,
     /// Alignments for those utterances, in `utts` order.
     pub alignments: Vec<Option<Alignment>>,
-}
-
-/// The per-iteration loop shared by mono, tri, lda and sat.
-///
-/// A stage supplies its schedule and two hooks, and this drives MFA's
-/// `train_iteration` (`base.py:367-381`): realign when the iteration is in the
-/// realignment list, run any stage-specific work (MLLT, fMLLR), accumulate, update,
-/// then increment the gaussian target.
-pub struct IterationPlan<'p> {
-    pub stage: Stage,
-    pub num_iterations: usize,
-    pub realignment_iterations: Vec<usize>,
-    pub gaussians: GaussianSchedule,
-    pub power: f32,
-    pub boost_silence: f32,
-    /// Beam override for the first iteration (monophone only).
-    pub initial_beam: Option<f32>,
-    /// min_gaussian_occupancy for iteration updates (10.0 except mono iteration 0).
-    pub min_gaussian_occupancy: f64,
-    pub utts: &'p [usize],
-}
-
-/// Stage-specific work that runs inside an iteration, before accumulation.
-pub trait IterationHooks {
-    /// Called at the start of each iteration; may change the feature view (LDA/MLLT
-    /// re-estimation, fMLLR estimation). Returns true when the cached stage features
-    /// must be rebuilt.
-    fn before_accumulate(
-        &mut self,
-        _ctx: &mut StageCtx<'_>,
-        _iteration: usize,
-        _utts: &[usize],
-        _alignments: &[Option<Alignment>],
-        _feats: &[Feats],
-    ) -> Result<bool> {
-        Ok(false)
-    }
-}
-
-/// A hooks implementation that does nothing (mono, tri).
-pub struct NoHooks;
-impl IterationHooks for NoHooks {}
-
-/// Run a stage's training iterations.
-///
-/// `feats` is the stage's cached feature view for `plan.utts`; it is rebuilt whenever
-/// a hook says the feature space changed.
-pub fn run_iterations(
-    ctx: &mut StageCtx<'_>,
-    plan: &mut IterationPlan<'_>,
-    hooks: &mut dyn IterationHooks,
-    mut feats: Vec<Feats>,
-    rebuild_feats: &dyn Fn(&StageCtx<'_>, &[usize]) -> Vec<Feats>,
-    graphs: &mut GraphSet,
-    initial_alignments: Vec<Option<Alignment>>,
-) -> Result<Vec<Option<Alignment>>> {
-    let stage_name = plan.stage.name();
-    let mut alignments = initial_alignments;
-    let opts = ctx.cfg.align.clone();
-    let batch = ctx.cfg.batch_utts;
-
-    for iteration in 1..=plan.num_iterations {
-        let started = Instant::now();
-        let mut failed = alignments.iter().filter(|a| a.is_none()).count();
-
-        if plan.realignment_iterations.contains(&iteration) {
-            let beam = if iteration == 1 {
-                plan.initial_beam
-            } else {
-                None
-            };
-            let iter_opts = align::iteration_align_options(&opts, beam);
-            let silence_pdfs = ctx.silence_pdfs();
-            let bar = ctx.progress.iter_bar(
-                stage_name,
-                iteration,
-                plan.num_iterations,
-                "align",
-                plan.utts.len() as u64,
-            );
-            let m = ctx.model();
-            // Kaldi compiles training graphs without transition probabilities and adds
-            // the current model's on every alignment pass; do the same.
-            graphs.apply_transition_probs(&m.tm, &ctx.graph);
-            let outcome = align::align_boosted(
-                graphs,
-                &m.tm,
-                &m.am,
-                &silence_pdfs,
-                plan.boost_silence,
-                ctx.device,
-                &feats,
-                &iter_opts,
-                batch,
-                &bar,
-            );
-            bar.finish();
-            failed = outcome.failed;
-            alignments = outcome.alignments;
-        }
-
-        if hooks.before_accumulate(ctx, iteration, plan.utts, &alignments, &feats)? {
-            feats = rebuild_feats(ctx, plan.utts);
-        }
-
-        let bar = ctx.progress.iter_bar(
-            stage_name,
-            iteration,
-            plan.num_iterations,
-            "accumulate",
-            plan.utts.len() as u64,
-        );
-        let st = {
-            let m = ctx.model();
-            stats::accumulate(ctx.device, &m.am, &m.tm, &alignments, &feats, &bar)
-        };
-        bar.finish();
-
-        let update_opts = UpdateOptions {
-            mixup: plan.gaussians.current(),
-            power: plan.power,
-            min_gaussian_occupancy: plan.min_gaussian_occupancy,
-            ..UpdateOptions::default()
-        };
-        let mut rng = ctx.rng.clone();
-        let result = {
-            let m = ctx.model_mut();
-            stats::update_model(&st, &mut m.tm, &mut m.am, &update_opts, &mut rng)
-        };
-        ctx.rng = rng;
-
-        plan.gaussians.step(iteration);
-
-        ctx.progress.iteration_summary(&IterationSummary {
-            stage: stage_name,
-            iteration,
-            num_iterations: plan.num_iterations,
-            loglike_per_frame: st.loglike_per_frame(),
-            gaussians: result.num_gauss,
-            failed,
-            elapsed: started.elapsed(),
-        });
-    }
-
-    Ok(alignments)
 }
 
 /// Scatter a stage's alignments back into a corpus-indexed vector.
@@ -488,7 +294,7 @@ pub fn train(
         "final",
         &format!("aligning {} utterances", corpus.utts.len()),
     );
-    let final_alignments = final_alignment(&ctx, &model)?;
+    let final_alignments = full_pass::final_alignment(&ctx, &model)?;
     let failed = final_alignments.iter().filter(|a| a.is_none()).count();
     if failed > 0 {
         progress.warn(format!(
@@ -643,100 +449,6 @@ fn align_for_pron_probs(ctx: &mut StageCtx<'_>, utts: &[usize]) -> Result<Vec<Op
     Ok(outcome.alignments)
 }
 
-/// Final full-corpus alignment with the trained model, including the fMLLR two-pass
-/// when the model is speaker-adapted.
-fn final_alignment(ctx: &StageCtx<'_>, model: &AcousticModel) -> Result<Vec<Option<Alignment>>> {
-    let utts: Vec<usize> = (0..ctx.corpus.utts.len()).collect();
-    let bar = ctx.progress.bar("graphs", utts.len() as u64);
-    let graphs = GraphSet::build(
-        utts.len(),
-        |i| ctx.words_of(utts[i]),
-        &model.tm,
-        &model.ctx,
-        &ctx.graph,
-        &bar,
-    );
-    bar.finish();
-
-    let mut store_feats = FeatureView::for_model(ctx, model, &utts);
-    // MFA's trainer aligns the corpus at the end with `boost_silence = 1.5`
-    // (`trainer.py:187`, carried into both fMLLR passes via `align_options`);
-    // a standalone `mfa align` uses 1.0, which is what `viter align` does.
-    const TRAINER_FINAL_BOOST: f32 = 1.5;
-    let silence_pdfs = model.tm.silence_pdfs(&model.silence_phones);
-    let bar = ctx.progress.bar("final align", utts.len() as u64);
-    let outcome = align::align_boosted(
-        &graphs,
-        &model.tm,
-        model.am_si.as_ref().unwrap_or(&model.am),
-        &silence_pdfs,
-        TRAINER_FINAL_BOOST,
-        ctx.device,
-        &store_feats.feats,
-        &ctx.cfg.align,
-        ctx.cfg.batch_utts,
-        &bar,
-    );
-    bar.finish();
-
-    // Speaker-independent model present means SAT: estimate fMLLR from the first pass
-    // and realign on adapted features.
-    if model.am_si.is_some() {
-        let transforms = sat::estimate_fmllr(
-            ctx,
-            &model.tm,
-            &model.am,
-            &utts,
-            &outcome.alignments,
-            &store_feats.feats,
-            &ctx.cfg.sat,
-        )?;
-        store_feats.apply_fmllr(ctx, &utts, &transforms);
-        let bar = ctx.progress.bar("final align (fmllr)", utts.len() as u64);
-        let adapted = align::align_boosted(
-            &graphs,
-            &model.tm,
-            &model.am,
-            &silence_pdfs,
-            TRAINER_FINAL_BOOST,
-            ctx.device,
-            &store_feats.feats,
-            &ctx.cfg.align,
-            ctx.cfg.batch_utts,
-            &bar,
-        );
-        bar.finish();
-        return Ok(adapted.alignments);
-    }
-
-    Ok(outcome.alignments)
-}
-
-/// Features for a set of utterances matching what a model expects.
-struct FeatureView {
-    feats: Vec<Feats>,
-}
-
-impl FeatureView {
-    fn for_model(ctx: &StageCtx<'_>, model: &AcousticModel, utts: &[usize]) -> Self {
-        let feats = match &model.lda {
-            Some(lda) => ctx.feats.feats_for_many(utts, FeatureKind::SpliceLda(lda)),
-            None => ctx.feats.feats_for_many(utts, FeatureKind::Deltas),
-        };
-        Self { feats }
-    }
-
-    /// Apply per-speaker fMLLR transforms to the current view.
-    fn apply_fmllr(&mut self, ctx: &StageCtx<'_>, utts: &[usize], transforms: &[Option<Mat>]) {
-        self.feats.par_iter_mut().enumerate().for_each(|(i, f)| {
-            let spk = ctx.feats.speaker_of(utts[i]);
-            if let Some(x) = &transforms[spk] {
-                *f = viter_kaldi::feat::apply_transform(f, x);
-            }
-        });
-    }
-}
-
 /// Assemble the serializable model from the current stage state.
 fn build_model(ctx: &StageCtx<'_>) -> Result<AcousticModel> {
     let m = ctx.model();
@@ -785,268 +497,6 @@ fn save_stage(ctx: &StageCtx<'_>, out_dir: Option<&Path>, name: &str) -> Result<
         .with_context(|| format!("writing intermediate model {}", path.display()))?;
     tracing::info!(stage = name, path = %path.display(), "wrote intermediate model");
     Ok(())
-}
-
-/// Align a corpus with an already-trained model.
-///
-/// With a speaker-adapted model (`am_si` present) this is MFA's two pass procedure:
-/// align with the speaker-independent model, estimate per-speaker fMLLR from those
-/// alignments, then realign on the adapted features with the SAT model.
-pub fn align_corpus(
-    corpus: &Corpus,
-    model: &AcousticModel,
-    device: &Device,
-    opts: Option<&AlignOptions>,
-) -> Result<Vec<Option<IntervalAlignment>>> {
-    align_corpus_with(corpus, model, device, opts, &AlignOverrides::default())
-}
-
-/// Align-time knobs that are not part of the model: MFA's global silence
-/// probabilities (`silence_probability`, `initial_silence_probability`,
-/// `final_silence_correction`, `final_non_silence_correction`, learned during
-/// its pronunciation-probability stage and stored in the model meta) and the
-/// silence boost applied to the acoustic model during alignment.
-#[derive(Clone, Debug, Default)]
-pub struct AlignOverrides {
-    pub silence_prob: Option<f32>,
-    pub initial_silence_prob: Option<f32>,
-    pub final_silence_correction: Option<f32>,
-    pub final_non_silence_correction: Option<f32>,
-    /// 1.0 = no boost (MFA's align default).
-    pub boost_silence: Option<f32>,
-    /// Refine phone boundaries to 1 ms after alignment (see [`refine`]).
-    pub refine: Option<refine::RefineOptions>,
-}
-
-pub fn align_corpus_with(
-    corpus: &Corpus,
-    model: &AcousticModel,
-    device: &Device,
-    opts: Option<&AlignOptions>,
-    over: &AlignOverrides,
-) -> Result<Vec<Option<IntervalAlignment>>> {
-    align_corpus_reading(corpus, model, device, opts, over, &|_, u| {
-        viter_kaldi::audio::read_16k(&u.audio)
-            .with_context(|| format!("reading audio for utterance {}", u.id))
-    })
-}
-
-/// Shared body of [`align_corpus_with`] and [`align_corpus_with_audio`]: `audio_of`
-/// supplies the 16 kHz waveform of each utterance (for MFCC and for refinement).
-pub(crate) fn align_corpus_reading(
-    corpus: &Corpus,
-    model: &AcousticModel,
-    device: &Device,
-    opts: Option<&AlignOptions>,
-    over: &AlignOverrides,
-    audio_of: &(
-         dyn Fn(usize, &viter_kaldi::types::Utterance) -> Result<viter_kaldi::audio::Audio> + Sync
-     ),
-) -> Result<Vec<Option<IntervalAlignment>>> {
-    if corpus.utts.is_empty() {
-        return Ok(Vec::new());
-    }
-    let progress = Progress::new();
-    let align_opts = opts.cloned().unwrap_or_default();
-
-    progress.stage("align", &format!("{} utterances", corpus.utts.len()));
-
-    let mut graph = model.graph_opts.clone();
-    // A model that learned pronunciation probabilities also learned the global
-    // silence probabilities; use them unless the caller overrides.
-    if let Some(lp) = &model.lexicon_probs {
-        graph.silence_prob = lp.silence_prob;
-        graph.initial_silence_prob = lp.initial_silence_prob;
-        graph.final_silence_correction = lp.final_silence_correction;
-        graph.final_non_silence_correction = lp.final_non_silence_correction;
-    }
-    if let Some(v) = over.silence_prob {
-        graph.silence_prob = v;
-    }
-    if let Some(v) = over.initial_silence_prob {
-        graph.initial_silence_prob = v;
-    }
-    if let Some(v) = over.final_silence_correction {
-        graph.final_silence_correction = v;
-    }
-    if let Some(v) = over.final_non_silence_correction {
-        graph.final_non_silence_correction = v;
-    }
-    let boost = over.boost_silence.unwrap_or(1.0);
-    let cfg = TrainConfig {
-        mfcc: model.mfcc.clone(),
-        deltas: model.deltas.clone().unwrap_or_default(),
-        align: align_opts.clone(),
-        graph,
-        ..TrainConfig::default()
-    };
-    let (sl, sr) = model
-        .splice
-        .unwrap_or((cfg.lda.splice_left, cfg.lda.splice_right));
-
-    let feats = FeatureStore::build_with_audio(
-        corpus,
-        &model.mfcc,
-        &cfg.deltas,
-        sl,
-        sr,
-        &progress,
-        audio_of,
-    )?;
-    let frame_shift_s = feats.frame_shift_s();
-
-    let ctx = StageCtx {
-        corpus,
-        feats,
-        device,
-        cfg: &cfg,
-        progress: &progress,
-        rng: Xoshiro256PlusPlus::seed_from_u64(cfg.seed),
-        silence_phones: model.silence_phones.clone(),
-        stage_subset: 0,
-        lexicon_probs: model.lexicon_probs.clone(),
-        graph: cfg.graph.clone(),
-        model: None,
-        alignments: Vec::new(),
-    };
-
-    let utts: Vec<usize> = (0..corpus.utts.len()).collect();
-    let _tg = Instant::now();
-    let bar = progress.bar("graphs", utts.len() as u64);
-    let graphs = GraphSet::build(
-        utts.len(),
-        |i| ctx.words_of(utts[i]),
-        &model.tm,
-        &model.ctx,
-        &ctx.graph,
-        &bar,
-    );
-    bar.finish();
-
-    tracing::debug!(graphs_ms = _tg.elapsed().as_millis(), "graphs built");
-    let _tf = Instant::now();
-    let mut view = FeatureView::for_model(&ctx, model, &utts);
-    tracing::debug!(
-        feats_ms = _tf.elapsed().as_millis(),
-        "stage features derived"
-    );
-
-    // Pass 1: speaker-independent model if we have one, else the single model.
-    let first_model = model.am_si.as_ref().unwrap_or(&model.am);
-    let silence_pdfs = model.tm.silence_pdfs(&model.silence_phones);
-    let bar = progress.bar("align", utts.len() as u64);
-    let mut outcome = align::align_boosted(
-        &graphs,
-        &model.tm,
-        first_model,
-        &silence_pdfs,
-        boost,
-        device,
-        &view.feats,
-        &align_opts,
-        cfg.batch_utts,
-        &bar,
-    );
-    bar.finish();
-
-    // Pass 2: fMLLR-adapted realignment.
-    let mut transforms: Vec<Option<Mat>> = vec![None; ctx.feats.num_speakers()];
-    if model.am_si.is_some() {
-        let fmllr_cfg = crate::config::SatConfig {
-            fmllr: model.fmllr.clone().unwrap_or_else(|| cfg.sat.fmllr.clone()),
-            ..cfg.sat.clone()
-        };
-        transforms = sat::estimate_fmllr(
-            &ctx,
-            &model.tm,
-            &model.am,
-            &utts,
-            &outcome.alignments,
-            &view.feats,
-            &fmllr_cfg,
-        )?;
-        view.apply_fmllr(&ctx, &utts, &transforms);
-        let bar = progress.bar("align (fmllr)", utts.len() as u64);
-        outcome = align::align_boosted(
-            &graphs,
-            &model.tm,
-            &model.am,
-            &silence_pdfs,
-            boost,
-            device,
-            &view.feats,
-            &align_opts,
-            cfg.batch_utts,
-            &bar,
-        );
-        bar.finish();
-    }
-
-    if outcome.failed > 0 {
-        progress.warn(format!(
-            "{} of {} utterances failed to align",
-            outcome.failed,
-            utts.len()
-        ));
-    }
-
-    let mut intervals: Vec<Option<IntervalAlignment>> = outcome
-        .alignments
-        .par_iter()
-        .enumerate()
-        .map(|(i, a)| {
-            a.as_ref().map(|ali| {
-                let mut iv =
-                    hmm::to_intervals(&model.tm, ali, &corpus.utts[i].prons, frame_shift_s);
-                iv.utt = corpus.utts[i].id.clone();
-                iv
-            })
-        })
-        .collect();
-
-    if let Some(ropts) = &over.refine {
-        let bar = progress.bar("refine", utts.len() as u64);
-        let feats = &ctx.feats;
-        let lda = model.lda.as_ref().map(|m| ((sl, sr), m));
-        let alignments = &outcome.alignments;
-        intervals = intervals
-            .par_iter()
-            .enumerate()
-            .map(|(i, iv)| {
-                bar.inc(1);
-                let iv = iv.as_ref()?;
-                let ali = alignments[i].as_ref()?;
-                let audio = audio_of(i, &corpus.utts[i]).ok()?;
-                let setup = refine::UttFeatureSetup {
-                    mfcc: &model.mfcc,
-                    cmvn: feats.cmvn_stats(feats.speaker_of(i)),
-                    deltas: &cfg.deltas,
-                    lda,
-                    fmllr: transforms[feats.speaker_of(i)].as_ref(),
-                };
-                Some(refine::refine_utterance(
-                    &audio.samples,
-                    &setup,
-                    model,
-                    ali,
-                    iv,
-                    ropts,
-                ))
-            })
-            .collect();
-        bar.finish();
-    }
-
-    progress.stage_done(
-        "align",
-        &format!(
-            "{} aligned, {} failed",
-            utts.len() - outcome.failed,
-            outcome.failed
-        ),
-    );
-    progress.finish();
-    Ok(intervals)
 }
 
 #[cfg(test)]
