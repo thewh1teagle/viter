@@ -122,7 +122,7 @@ pub fn run(ctx: &mut StageCtx<'_>, cfg: &MonoConfig) -> Result<StageOutput> {
     let started = std::time::Instant::now();
     let bar = ctx
         .progress
-        .bar("mono iter 0 · accumulate", utts.len() as u64);
+        .iter_bar(0, cfg.num_iterations, "accumulate", utts.len() as u64);
     let st = {
         let m = ctx.model();
         let mut acc: Option<stats::Stats> = None;

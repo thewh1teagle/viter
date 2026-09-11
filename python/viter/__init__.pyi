@@ -1,5 +1,5 @@
 import os
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import numpy.typing as npt
@@ -136,8 +136,31 @@ def train(
     no_subset: bool = False,
     position_dependent: bool = True,
     work_dir: Optional[StrPath] = None,
+    progress: Optional[Callable[[Mapping[str, Any]], None]] = None,
+    quiet: bool = False,
 ) -> Model:
-    """Train an acoustic model from a corpus directory."""
+    """Train an acoustic model from a corpus directory.
+
+    ``progress`` is called with one dict holding ``done``, ``total``, ``fraction``,
+    ``elapsed`` (seconds), ``eta`` (seconds or ``None``), ``stage``, ``step`` and
+    ``mismatches`` (a plan-vs-run disagreement counter, normally 0). It fires at
+    most ~10 times a second and on every stage change, with ``done == total`` and
+    ``fraction == 1.0`` exactly once at the end. ``done``/``total`` count utterance-passes;
+    ``fraction`` is the elapsed share of the predicted total time, and is what the terminal
+    bar shows. Exceptions the callback raises are reported as unraisable, not propagated.
+    ``quiet=True`` suppresses the terminal bar; ``progress`` still fires.
+
+        from tqdm import tqdm
+
+        bar = tqdm(total=1000, unit="permille")
+
+        def on_progress(info):
+            bar.n = int(1000 * info["fraction"])
+            bar.set_description(info["stage"])
+            bar.refresh()
+
+        viter.train("corpus", "model.viter", progress=on_progress, quiet=True)
+    """
 
 def import_mfa(path: StrPath, out: Optional[StrPath] = None) -> Model:
     """Convert a Montreal Forced Aligner acoustic model into a viter model."""

@@ -27,7 +27,7 @@ use viter_kaldi::model::AcousticModel;
 use viter_kaldi::transform::Mat;
 use viter_kaldi::types::{Alignment, Feats, IntervalAlignment};
 
-use super::progress::Progress;
+use super::progress::{Phase, Progress};
 use super::{FeatureKind, FeatureStore, GraphSet, StageCtx, align, chunk, refine, sat};
 use crate::config::TrainConfig;
 
@@ -36,6 +36,7 @@ use crate::config::TrainConfig;
 pub(super) fn final_alignment(
     ctx: &StageCtx<'_>,
     model: &AcousticModel,
+    sat_ran: bool,
 ) -> Result<Vec<Option<Alignment>>> {
     let utts: Vec<usize> = (0..ctx.corpus.utts.len()).collect();
 
@@ -47,8 +48,26 @@ pub(super) fn final_alignment(
 
     let mut out: Vec<Option<Alignment>> = vec![None; utts.len()];
     let chunks = chunk::by_frames(&ctx.feats, &utts, chunk::frames_for(ctx.cfg));
-    let mut graph_bar = Phase::new(ctx.progress, "graphs", utts.len() as u64);
-    let mut align_bar = Phase::new(ctx.progress, "final align", utts.len() as u64);
+
+    // Graphs once for the whole corpus, in chunk order, so each chunk is a window
+    // on the set (as the training stages do). They are small, and pass 2 needs the
+    // same graphs again. Chunk `k` owns `offsets[k]..offsets[k + 1]`.
+    let order: Vec<usize> = chunks.iter().flatten().copied().collect();
+    let mut offsets = Vec::with_capacity(chunks.len() + 1);
+    offsets.push(0usize);
+    for c in &chunks {
+        offsets.push(offsets.last().unwrap() + c.len());
+    }
+    let bar = ctx.progress.bar("graphs", utts.len() as u64);
+    let graphs = GraphSet::build(
+        order.len(),
+        |i| ctx.words_of(order[i]),
+        &model.tm,
+        &model.ctx,
+        &ctx.graph,
+        &bar,
+    );
+    bar.finish();
 
     // Speaker-independent model present means SAT: estimate fMLLR from the first
     // pass and realign on adapted features.
@@ -59,23 +78,13 @@ pub(super) fn final_alignment(
 
     // Pass 1: align every chunk with the speaker-independent model, accumulating the
     // fMLLR statistics as we go. The alignments are kept for the whole corpus.
-    for c in &chunks {
-        let bar = graph_bar.bar();
-        let graphs = GraphSet::build(
-            c.len(),
-            |i| ctx.words_of(c[i]),
-            &model.tm,
-            &model.ctx,
-            &ctx.graph,
-            &bar,
-        );
-        bar.finish();
-        graph_bar.done(c.len() as u64);
-
+    let mut align_bar = Phase::new(ctx.progress, "final align", utts.len() as u64);
+    for (k, c) in chunks.iter().enumerate() {
+        let sub = graphs.slice(offsets[k], offsets[k + 1]);
         let store_feats = FeatureView::for_model(ctx, model, c);
         let bar = align_bar.bar();
         let outcome = align::align_boosted(
-            &graphs,
+            sub,
             &model.tm,
             model.am_si.as_ref().unwrap_or(&model.am),
             &silence_pdfs,
@@ -107,27 +116,17 @@ pub(super) fn final_alignment(
     }
 
     // Pass 2: one solve over all speakers, then realign every chunk on the adapted
-    // features.
+    // features with the same graphs.
     if let Some(est) = estimator {
         let transforms = est.solve(ctx, &ctx.cfg.sat)?;
         let mut adapt_bar = Phase::new(ctx.progress, "final align (fmllr)", utts.len() as u64);
-        for c in &chunks {
-            let bar = graph_bar.bar();
-            let graphs = GraphSet::build(
-                c.len(),
-                |i| ctx.words_of(c[i]),
-                &model.tm,
-                &model.ctx,
-                &ctx.graph,
-                &bar,
-            );
-            bar.finish();
-
+        for (k, c) in chunks.iter().enumerate() {
+            let sub = graphs.slice(offsets[k], offsets[k + 1]);
             let mut store_feats = FeatureView::for_model(ctx, model, c);
             store_feats.apply_fmllr(ctx, c, &transforms);
             let bar = adapt_bar.bar();
             let adapted = align::align_boosted(
-                &graphs,
+                sub,
                 &model.tm,
                 &model.am,
                 &silence_pdfs,
@@ -144,40 +143,13 @@ pub(super) fn final_alignment(
                 out[u] = a;
             }
         }
+    } else if sat_ran {
+        // The plan counts the "final align (fmllr)" pass whenever the schedule
+        // contained a SAT stage; this model has no `am_si`, so credit it.
+        ctx.progress.skip(utts.len() as u64);
     }
 
     Ok(out)
-}
-
-/// One logical progress phase spanning every chunk.
-///
-/// All of `Progress`'s bars share a single live line, so a fresh `bar()` resets it.
-/// A phase remembers how many units earlier chunks finished and restores that
-/// position, keeping the displayed total at the whole corpus.
-struct Phase<'p> {
-    progress: &'p Progress,
-    msg: &'static str,
-    len: u64,
-    done: u64,
-}
-
-impl<'p> Phase<'p> {
-    fn new(progress: &'p Progress, msg: &'static str, len: u64) -> Self {
-        Self {
-            progress,
-            msg,
-            len,
-            done: 0,
-        }
-    }
-    fn bar(&self) -> super::progress::Bar {
-        let bar = self.progress.bar(self.msg, self.len);
-        bar.set_position(self.done);
-        bar
-    }
-    fn done(&mut self, n: u64) {
-        self.done += n;
-    }
 }
 
 /// Features for a set of utterances matching what a model expects.
@@ -467,8 +439,9 @@ pub(crate) fn align_corpus_reading(
     if let Some(est) = estimator {
         transforms = est.solve(&ctx, &fmllr_cfg)?;
         let mut adapt_bar = Phase::new(&progress, "align (fmllr)", utts.len() as u64);
+        let mut graph2_bar = Phase::new(&progress, "graphs", utts.len() as u64);
         for c in &chunks {
-            let bar = graph_bar.bar();
+            let bar = graph2_bar.bar();
             let graphs = GraphSet::build(
                 c.len(),
                 |i| ctx.words_of(c[i]),
@@ -478,6 +451,7 @@ pub(crate) fn align_corpus_reading(
                 &bar,
             );
             bar.finish();
+            graph2_bar.done(c.len() as u64);
 
             let mut view = FeatureView::for_model(&ctx, model, c);
             view.apply_fmllr(&ctx, c, &transforms);

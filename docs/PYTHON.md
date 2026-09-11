@@ -43,7 +43,7 @@ alignment.to_textgrid("audio.TextGrid")
 viter.train(corpus_dir, out=None, *, dict=None, config=None, cpu=False, seed=None,
             no_tri=False, no_lda=False, no_sat=False, no_pron_probs=False,
             sat_rounds=None, no_subset=False, position_dependent=True,
-            work_dir=None) -> Model
+            work_dir=None, progress=None, quiet=False) -> Model
 ```
 
 Trains mono → tri → LDA+MLLT → SAT on `corpus_dir` and returns the model; writes it to `out`
@@ -70,6 +70,39 @@ Short schedule, CPU, no speaker adaptation — useful for a single-speaker corpu
 ```python
 model = viter.train("corpus/", cpu=True, no_sat=True, sat_rounds=1, no_pron_probs=True)
 ```
+
+`progress` is a callable taking one dict with the keys `done`, `total`, `fraction`,
+`elapsed` (seconds), `eta` (seconds, or `None` until the first pass finishes), `stage`,
+`step` and `mismatches` (a plan-vs-run disagreement counter, normally 0). `done`/`total`
+count utterance-passes — one utterance processed by one pass — over the whole run, so
+`done == total` (exactly once, at the end) means the run is over.
+`fraction` is the elapsed share of the predicted total time, the same number the terminal bar
+shows, and it never decreases. The callback fires at most ~10 times a second and on every
+stage change; exceptions it raises are reported as unraisable and do not stop training.
+`quiet=True` suppresses viter's own terminal bar while still calling `progress`.
+
+```python
+from tqdm import tqdm
+
+bar = tqdm(total=1000, unit="permille")
+
+def on_progress(info):
+    bar.n = int(1000 * info["fraction"])
+    bar.set_description(info["stage"])
+    bar.refresh()
+
+viter.train("corpus/", "model.viter", progress=on_progress, quiet=True)
+```
+
+The ETA is measured, not extrapolated from the raw counter: the plan of every pass the
+schedule will run is fixed before training starts, each pass's cost (including the gaps
+around it) is measured as it runs, a pass that has not run yet is predicted from measured
+passes of the same kind — extrapolated in model size when the same kind ran in earlier
+stages — and a kind that has never run from a built-in cost table scaled to this machine.
+Measured on LJSpeech (13k utterances, GPU): never more than ~20% off after the first
+minute, typically under 10%. On CPU the estimate is within ~15% from the triphone stage on.
+On a small corpus (1k utterances) it can read ~30% low before the SAT rounds, whose cost is
+not knowable until one has been measured.
 
 Training releases the GIL, so other threads keep running, and Ctrl-C interrupts between stages.
 

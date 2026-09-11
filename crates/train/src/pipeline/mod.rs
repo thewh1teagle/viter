@@ -12,6 +12,7 @@ pub mod features;
 pub mod full_pass;
 pub mod inmem;
 pub mod iterate;
+pub mod plan;
 pub mod progress;
 pub mod refine;
 pub mod stats;
@@ -33,7 +34,8 @@ pub use features::{FeatureKind, FeatureStore};
 pub use full_pass::{AlignOverrides, align_corpus, align_corpus_with, align_subset_with_previous};
 pub use inmem::align_corpus_with_audio;
 pub use iterate::{IterationHooks, IterationPlan, NoHooks, run_iterations};
-pub use progress::{IterationSummary, Progress};
+pub use plan::{PlannedPass, PlannedStage, WorkPlan, work_plan};
+pub use progress::{IterationSummary, Phase, Progress, ProgressEvent, ProgressSink};
 pub use stats::{Stats, UpdateOptions};
 
 use crate::config::{StageSpec, TrainConfig};
@@ -47,10 +49,15 @@ pub struct Trained {
 }
 
 /// Output options for a training run, separate from the training recipe.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct TrainOptions {
     /// Align the full corpus with the finished model. Defaults to false.
     pub final_alignment: bool,
+    /// Progress callback (python tqdm, tests). Called at most ~10x/s plus on every
+    /// stage change and once at the end with `done == total`.
+    pub progress: Option<ProgressSink>,
+    /// No terminal output at all (the sink still fires).
+    pub quiet: bool,
 }
 
 /// The model pieces a stage reads and writes.
@@ -179,6 +186,7 @@ pub fn train(
         out_dir,
         &TrainOptions {
             final_alignment: true,
+            ..Default::default()
         },
     )
 }
@@ -199,21 +207,39 @@ pub fn train_with(
             .with_context(|| format!("creating output directory {}", dir.display()))?;
     }
 
-    let progress = Progress::new();
+    let mut progress = if opts.quiet {
+        Progress::hidden()
+    } else {
+        Progress::new()
+    };
+    if let Some(sink) = opts.progress.clone() {
+        progress = progress.with_sink(sink);
+    }
+
+    // `finish()` must run on every exit path, including errors: the run body is a
+    // closure and the result is returned only after the bar is closed.
+    let result = train_body(corpus, cfg, device, out_dir, opts, &progress);
+    progress.finish();
+    result
+}
+
+fn train_body(
+    corpus: &Corpus,
+    cfg: &TrainConfig,
+    device: &Device,
+    out_dir: Option<&Path>,
+    opts: &TrainOptions,
+    progress: &Progress,
+) -> Result<Trained> {
     let n = corpus.utts.len();
     let schedule = cfg.effective_schedule(n);
+    let sat_ran = schedule.iter().any(|s| matches!(s, StageSpec::Sat { .. }));
 
-    // Relative cost per stage drives the overall % and ETA; features and the final
-    // two-pass alignment count as a few passes over the whole corpus.
-    let mut plan: Vec<(String, f64)> = vec![("features".to_string(), 2.0 * n as f64)];
-    for spec in &schedule {
-        plan.push((spec.key(), spec.cost(n, cfg)));
+    let work = work_plan(cfg, n, opts.final_alignment);
+    progress.plan(&work);
+    if device.kind() == viter_kaldi::device::DeviceKind::Cpu {
+        progress.cpu_prior();
     }
-    if opts.final_alignment {
-        plan.push(("final".to_string(), 4.0 * n as f64));
-    }
-    let plan_refs: Vec<(&str, f64)> = plan.iter().map(|(k, w)| (k.as_str(), *w)).collect();
-    progress.plan(&plan_refs);
     progress.stage(
         "features",
         &format!(
@@ -229,9 +255,13 @@ pub fn train_with(
         &cfg.deltas,
         cfg.lda.splice_left,
         cfg.lda.splice_right,
-        &progress,
+        progress,
     )?;
     let total_frames: usize = (0..corpus.utts.len()).map(|i| feats.num_frames(i)).sum();
+    // Kaldi's split rule (`SplitByCount`, min_count 20) bounds the model at about one
+    // gaussian per 20 frames; tell the ETA model so small corpora are not predicted
+    // at the schedule's unreachable targets.
+    progress.cap_gauss((total_frames / 20) as u64);
     progress.stage_done(
         "features",
         &format!(
@@ -249,7 +279,7 @@ pub fn train_with(
         feats,
         device,
         cfg,
-        progress: &progress,
+        progress,
         rng: Xoshiro256PlusPlus::seed_from_u64(cfg.seed),
         silence_phones: corpus.silence_phones.clone(),
         stage_subset: 0,
@@ -320,7 +350,6 @@ pub fn train_with(
 
     if !opts.final_alignment {
         progress.stage_done("training", "model trained");
-        progress.finish();
         return Ok(Trained {
             model,
             alignments: Vec::new(),
@@ -332,7 +361,7 @@ pub fn train_with(
         "final",
         &format!("aligning {} utterances", corpus.utts.len()),
     );
-    let final_alignments = full_pass::final_alignment(&ctx, &model)?;
+    let final_alignments = full_pass::final_alignment(&ctx, &model, sat_ran)?;
     let failed = final_alignments.iter().filter(|a| a.is_none()).count();
     if failed > 0 {
         progress.warn(format!(
@@ -354,7 +383,6 @@ pub fn train_with(
         "training",
         &format!("{} utterances aligned", alignments.len()),
     );
-    progress.finish();
 
     Ok(Trained { model, alignments })
 }
