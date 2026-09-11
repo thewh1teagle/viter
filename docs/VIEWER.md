@@ -57,11 +57,10 @@ In a second terminal, run the Rust server against real data so the proxy has som
 to:
 
 ```bash
-cargo run -- serve ./aligned --no-open
+cargo run -- serve ./aligned
 ```
 
-The proxy is configured in `web/vite.config.ts`; `--no-open` keeps the Rust side from opening a
-browser at the wrong port. Hot reload works normally — you are editing the vite app, and only
+The proxy is configured in `web/vite.config.ts`. Hot reload works normally — you are editing the vite app, and only
 the API comes from Rust.
 
 For a production build:

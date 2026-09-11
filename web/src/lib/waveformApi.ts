@@ -9,6 +9,7 @@ import type WaveSurfer from "wavesurfer.js"
 import type { FileEntry } from "@/api"
 import { clamp } from "@/lib/time"
 import type { PlayerRef, Viewport } from "@/lib/player"
+import { playRegion as playBufferRegion, type RegionPlayback } from "@/lib/regionPlayer"
 import { MAX_PX_PER_SEC, MIN_PX_PER_SEC, useStore } from "@/store"
 
 export interface Region {
@@ -22,14 +23,53 @@ export function createWaveformApi(opts: {
   player: PlayerRef
   fileRef: { current: FileEntry }
   regionRef: { current: Region | null }
+  bufferRef: { current: { id: string; buffer: AudioBuffer } | null }
+  activeRef: { current: RegionPlayback | null }
   zoomRef: { current: number }
   measure: () => Viewport
   emit: () => void
   getScroller: () => HTMLElement | null
   isDisposed: () => boolean
 }) {
-  const { ws, player, fileRef, regionRef, zoomRef, measure, emit, getScroller } = opts
+  const { ws, player, fileRef, regionRef, bufferRef, activeRef, zoomRef, measure, emit, getScroller } =
+    opts
   const disposedNow = opts.isDisposed
+
+  /** Cancel a Web Audio interval in progress, leaving the cursor where it is. */
+  const stopActive = () => {
+    const active = activeRef.current
+    if (!active) return
+    activeRef.current = null
+    active.stop()
+    // Leave the media element where the sound stopped, not where it started.
+    ws.setTime(useStore.getState().playhead)
+    useStore.getState().setPlaying(false)
+  }
+
+  /**
+   * Sample-accurate path: the media element stays paused and only mirrors the
+   * position, so its `timeupdate` poll can no longer overshoot the boundary.
+   */
+  const playDecoded = (buffer: AudioBuffer, start: number, end: number) => {
+    const renderer = ws.getRenderer()
+    const dur = ws.getDuration() || fileRef.current.duration
+    const media = ws.getMediaElement()
+    media.pause()
+    const show = (t: number) => {
+      useStore.getState().setPlayhead(t)
+      if (dur > 0) renderer.renderProgress(t / dur, true)
+    }
+    show(start)
+    useStore.getState().setPlaying(true)
+    const playback: RegionPlayback = playBufferRegion(buffer, start, end, show, () => {
+      if (activeRef.current !== playback) return
+      activeRef.current = null
+      // Park the media element at the boundary so a later Space resumes there.
+      ws.setTime(end)
+      useStore.getState().setPlaying(false)
+    })
+    activeRef.current = playback
+  }
 
   return {
 
@@ -39,6 +79,7 @@ export function createWaveformApi(opts: {
         const dur = ws.getDuration() || fileRef.current.duration
         if (dur <= 0) return
         regionRef.current = null
+        stopActive()
         ws.seekTo(clamp(time, 0, dur) / dur)
         useStore.getState().setPlayhead(clamp(time, 0, dur))
       },
@@ -48,6 +89,13 @@ export function createWaveformApi(opts: {
         const w = ws
         const start = clamp(from, 0, dur)
         const end = Math.min(to, dur)
+        stopActive()
+        const decoded = bufferRef.current
+        if (decoded && decoded.id === fileRef.current.id) {
+          regionRef.current = null
+          playDecoded(decoded.buffer, start, end)
+          return
+        }
         const region = { start, end, armed: false }
         regionRef.current = region
         const media = w.getMediaElement()
@@ -98,10 +146,15 @@ export function createWaveformApi(opts: {
       },
       playPause: () => {
         regionRef.current = null
+        if (activeRef.current) {
+          stopActive()
+          return
+        }
         void ws.playPause()
       },
       pause: () => {
         regionRef.current = null
+        stopActive()
         ws.pause()
       },
       zoomAt: (pxPerSec: number, anchorTime: number, anchorClientX?: number) => {

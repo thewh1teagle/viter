@@ -5,6 +5,7 @@ import { audioUrl, fetchPeaks, peaksToWaveSurfer, type FileEntry } from "@/api"
 import { useStore } from "@/store"
 import type { PlayerRef, Viewport } from "@/lib/player"
 import { createWaveformApi } from "@/lib/waveformApi"
+import { decodeAudio, type RegionPlayback } from "@/lib/regionPlayer"
 
 /** Columns requested from /api/peaks — plenty for a wide screen, cheap to send. */
 const PEAK_COLUMNS = 4000
@@ -38,6 +39,10 @@ export function Waveform({ file, player }: { file: FileEntry; player: PlayerRef 
    * seek (the previous position, or the file end) cannot cancel the new play.
    */
   const regionRef = useRef<{ start: number; end: number; armed: boolean } | null>(null)
+  /** Decoded samples of the current file, for sample-accurate interval playback. */
+  const bufferRef = useRef<{ id: string; buffer: AudioBuffer } | null>(null)
+  /** Interval currently playing through Web Audio, if any. */
+  const activeRef = useRef<RegionPlayback | null>(null)
   const theme = useStore((s) => s.theme)
 
   // The instance outlives any one file, so everything file-dependent is read
@@ -138,6 +143,8 @@ export function Waveform({ file, player }: { file: FileEntry; player: PlayerRef 
       player,
       fileRef,
       regionRef,
+      bufferRef,
+      activeRef,
       zoomRef,
       measure,
       emit,
@@ -153,6 +160,8 @@ export function Waveform({ file, player }: { file: FileEntry; player: PlayerRef 
       disposed = true
       ro.disconnect()
       if (player.impl === impl) player.impl = null
+      activeRef.current?.stop()
+      activeRef.current = null
       wsRef.current = null
       ws.destroy()
     }
@@ -165,6 +174,9 @@ export function Waveform({ file, player }: { file: FileEntry; player: PlayerRef 
     const abort = new AbortController()
     let cancelled = false
     regionRef.current = null
+    activeRef.current?.stop()
+    activeRef.current = null
+    bufferRef.current = null
 
     // Peaks paint the waveform from the server summary without decoding; the
     // audio is fetched whole so playback never waits on the network. Both go
@@ -189,7 +201,16 @@ export function Waveform({ file, player }: { file: FileEntry; player: PlayerRef 
     Promise.all([peaks, audio])
       .then(([p, blob]) => {
         if (cancelled) return
-        if (blob) return ws.loadBlob(blob, p.peaks, p.duration)
+        if (blob) {
+          // Decode in parallel with the media element's own load; interval
+          // clicks fall back to the media element until this resolves.
+          decodeAudio(blob, abort.signal)
+            .then((buffer) => {
+              if (!cancelled) bufferRef.current = { id: file.id, buffer }
+            })
+            .catch(() => {})
+          return ws.loadBlob(blob, p.peaks, p.duration)
+        }
         return ws.load(audioUrl(file.id), p.peaks, p.duration)
       })
       .catch(() => {})

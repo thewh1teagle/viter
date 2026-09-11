@@ -12,13 +12,17 @@ pub struct ServeArgs {
     #[arg(value_name = "DIR", default_value = ".")]
     pub dir: PathBuf,
 
-    /// Port to bind on 127.0.0.1 (0 picks a free one)
+    /// Port to bind (0 picks a free one)
     #[arg(short, long, default_value_t = 7878)]
     pub port: u16,
 
-    /// Do not open a browser window
+    /// Address to bind; 0.0.0.0 exposes the viewer to the network
+    #[arg(long, default_value = "127.0.0.1", value_name = "ADDR")]
+    pub host: std::net::IpAddr,
+
+    /// Open the viewer in the default browser once the server is listening
     #[arg(long)]
-    pub no_open: bool,
+    pub open: bool,
 
     /// Folder with the audio files when DIR holds only TextGrids (e.g. a training
     /// output next to its corpus); matched by file name
@@ -30,8 +34,9 @@ pub fn run(args: ServeArgs) -> anyhow::Result<()> {
     let rt = tokio::runtime::Runtime::new().context("failed to start the tokio runtime")?;
     rt.block_on(serve(ServeOptions {
         dir: args.dir,
+        host: args.host,
         port: args.port,
-        open: !args.no_open,
+        open: args.open,
         audio: args.audio,
     }))
 }

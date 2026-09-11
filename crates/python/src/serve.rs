@@ -31,6 +31,7 @@ pub fn serve(
 ) -> PyResult<()> {
     let opts = ServeOptions {
         dir,
+        host: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
         port,
         open,
         audio,
