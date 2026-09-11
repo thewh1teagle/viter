@@ -121,11 +121,14 @@ directory sitting next to the audio, or the audio directory itself.
 |---|---|---|
 | `<dir>` | required | directory scanned recursively for `x.TextGrid` paired with `x.wav\|flac\|mp3` |
 | `--port <N>` | 7878 | listen port |
-| `--no-open` | off | do not open a browser automatically |
+| `--host <ADDR>` | 127.0.0.1 | bind address; `0.0.0.0` exposes the viewer to the network |
+| `--audio <dir>` | none | take audio from this folder when `<dir>` holds only TextGrids (matched by file name) |
+| `--open` | off | open the viewer in the default browser |
 
 ```bash
 viter serve ./aligned
-viter serve ./aligned --port 9000 --no-open
+viter serve ./aligned --port 9000 --open
+viter serve ./train-tg --audio ./corpus --host 0.0.0.0   # reachable from other machines
 ```
 
 See [VIEWER.md](VIEWER.md) for the API and keyboard shortcuts.

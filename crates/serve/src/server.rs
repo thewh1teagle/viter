@@ -1,6 +1,6 @@
 //! The axum server: JSON API under `/api`, everything else the embedded React viewer.
 
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 
 use anyhow::Context;
@@ -21,9 +21,12 @@ use crate::api::{self, AppState};
 pub struct ServeOptions {
     /// Folder with wavs + TextGrids (typically an aligner output directory).
     pub dir: PathBuf,
-    /// TCP port on loopback.
+    /// Address to bind (loopback by default; `0.0.0.0` exposes the viewer on the LAN).
+    pub host: IpAddr,
+    /// TCP port.
     pub port: u16,
-    /// Open the URL in the default browser once the listener is bound.
+    /// Open the URL in the default browser once the listener is bound (off by default:
+    /// on headless machines `xdg-open` can hang and remote shells have nothing to open).
     pub open: bool,
     /// Folder to take audio from when TextGrids have no sibling audio (matched by stem).
     pub audio: Option<PathBuf>,
@@ -33,8 +36,9 @@ impl Default for ServeOptions {
     fn default() -> Self {
         Self {
             dir: PathBuf::from("."),
+            host: IpAddr::V4(Ipv4Addr::LOCALHOST),
             port: 7878,
-            open: true,
+            open: false,
             audio: None,
         }
     }
@@ -45,7 +49,7 @@ impl Default for ServeOptions {
 #[folder = "../../web/dist"]
 struct Assets;
 
-/// Serve `opts.dir` on `127.0.0.1:opts.port` until the process is interrupted.
+/// Serve `opts.dir` on `opts.host:opts.port` until the process is interrupted.
 pub async fn serve(opts: ServeOptions) -> anyhow::Result<()> {
     let dir = opts
         .dir
@@ -59,13 +63,19 @@ pub async fn serve(opts: ServeOptions) -> anyhow::Result<()> {
 
     let app = router(state);
 
-    let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, opts.port));
+    let addr = SocketAddr::from((opts.host, opts.port));
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .with_context(|| format!("cannot bind {addr} (is another viter serve running?)"))?;
     // Port 0 means "any free port", so report what we actually got.
     let bound = listener.local_addr().context("cannot read local address")?;
-    let url = format!("http://{bound}");
+    // An unspecified address is not browsable; show loopback for the banner.
+    let shown = if bound.ip().is_unspecified() {
+        SocketAddr::from((Ipv4Addr::LOCALHOST, bound.port()))
+    } else {
+        bound
+    };
+    let url = format!("http://{shown}");
 
     print_banner(&url, &dir, num_files);
 
