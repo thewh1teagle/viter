@@ -104,22 +104,6 @@ impl StageSpec {
             _ => false,
         }
     }
-
-    /// Relative cost, for the progress ETA: iterations x utterances.
-    pub fn cost(&self, num_utts: usize, cfg: &TrainConfig) -> f64 {
-        let n = match self.subset() {
-            0 => num_utts,
-            s => s.min(num_utts),
-        }
-        .max(1) as f64;
-        match self {
-            StageSpec::Mono { .. } => cfg.mono.num_iterations as f64 * n,
-            StageSpec::Tri { .. } => cfg.tri.num_iterations as f64 * n,
-            StageSpec::Lda { .. } => cfg.lda.num_iterations as f64 * n,
-            StageSpec::Sat { num_iterations, .. } => 1.5 * *num_iterations as f64 * n,
-            StageSpec::PronProbs { .. } => 2.5 * n,
-        }
-    }
 }
 
 /// MFA's default `training_configuration` (`trainer.py:191-236`), verbatim.

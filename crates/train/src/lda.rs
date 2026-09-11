@@ -254,7 +254,6 @@ impl IterationHooks for MlltHooks {
         }
         let dim = ctx.model().am.dim();
         let bar = ctx.progress.iter_bar(
-            "lda",
             iteration,
             self.cfg.num_iterations,
             "mllt",

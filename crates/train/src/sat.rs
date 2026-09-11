@@ -372,7 +372,7 @@ impl FmllrEstimator {
     /// hold enough counts.
     pub fn solve(self, ctx: &StageCtx<'_>, cfg: &SatConfig) -> Result<Vec<Option<Mat>>> {
         let num_speakers = self.accs.len();
-        let bar = ctx.progress.bar("fmllr", num_speakers as u64);
+        let bar = ctx.progress.spinner("fmllr");
         // A solve is ~40 ms of dense linear algebra (40 row updates, each inverting
         // the transform), which on 462 TIMIT speakers dwarfed the accumulation, so
         // the solves run in parallel over speakers.
@@ -502,10 +502,12 @@ fn build_align_model(
 ) -> Result<()> {
     if !ctx.feats.has_any_fmllr() {
         // Nothing was adapted, so the SAT model is already speaker independent.
+        // The plan counts the "two-feats stats" pass unconditionally, so credit it.
+        ctx.progress.skip(utts.len() as u64);
         return Ok(());
     }
     ctx.progress
-        .stage("sat", "building speaker-independent alignment model");
+        .step("building speaker-independent alignment model");
 
     // One chunk of utterances at a time: only that chunk's derived features (LDA /
     // fMLLR views, far larger than the base MFCCs) are live at once. These statistics

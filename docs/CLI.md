@@ -186,9 +186,26 @@ RTF            0.031
 Without `--out-textgrids`, `train` omits `aligned` and `failed` from the summary because
 no final alignment was measured, and prints a hint to use `viter align` for TextGrids.
 
-Progress during a run is one `indicatif` bar per stage (`mono iter 12/40`), plus a bar for the
-initial feature extraction. Detailed logging goes through `tracing`; raise it with
+Progress during a run is a single bar covering the whole schedule. The counter under it
+is in **utterance-passes** — one utterance processed by one pass (MFCC, graph build,
+alignment, accumulation, tree stats, …) — and its total is computed before training starts by
+enumerating every pass the schedule will run, so reaching it means the run is over. The bar
+and its percentage show the elapsed share of the *predicted* total time rather than the raw
+counter, because a late pass over the same utterances costs several times more than an early
+one. The current stage and sub-step show as text on the bar (`SAT/fMLLR 2 · iter 12/35 ·
+align 4,608/13,093 · 1,234,567/3,651,390`), and each stage prints one persistent line with
+its elapsed time when it finishes. Detailed logging goes through `tracing`; raise it with
 `RUST_LOG=debug`.
+
+The ETA is measured rather than extrapolated from the counter: every pass's cost (including
+the gaps around it — tree builds, model updates, fMLLR solves) is timed as it runs, a pass
+that has not run yet is predicted from measured passes of the same kind, extrapolated in
+model size when that kind ran in an earlier stage, and a kind that has never run is taken
+from a built-in cost table scaled to this machine's measured speed. Measured on LJSpeech (13k
+utterances, GPU): never more than ~20% off after the first minute, typically under 10%. On
+CPU the estimate is within ~15% from the triphone stage on. On a small corpus (1k
+utterances) it can read ~30% low before the SAT rounds, whose cost is not knowable until one
+has been measured.
 
 ## Exit codes
 

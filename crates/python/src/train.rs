@@ -1,6 +1,7 @@
 //! `train` and `import_mfa`.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::Context;
 use pyo3::prelude::*;
@@ -17,11 +18,31 @@ use crate::model::Model;
 ///
 /// The keyword arguments mirror `viter train`'s flags one for one. Returns the trained
 /// model, and also writes it to `out` when that is given.
+///
+/// `progress` is a callable taking one dict with the keys `done`, `total`, `fraction`,
+/// `elapsed` (seconds), `eta` (seconds or `None`), `stage`, `step` and `mismatches`
+/// (a plan-vs-run disagreement counter, normally 0). It is called at most
+/// ~10 times a second and on every stage change, with `done == total` and `fraction == 1.0`
+/// exactly once at the end; the unit of `done`/`total` is one utterance-pass, while
+/// `fraction` is the elapsed share of the *predicted* total time. Exceptions it raises are
+/// reported as unraisable and do not stop training. `quiet=True` suppresses the terminal bar
+/// while still calling `progress`.
+///
+/// ```python
+/// from tqdm import tqdm
+/// bar = tqdm(total=1000, unit="permille")
+/// def on_progress(info):
+///     bar.n = int(1000 * info["fraction"])
+///     bar.set_description(info["stage"])
+///     bar.refresh()
+/// viter.train("corpus", "model.viter", progress=on_progress, quiet=True)
+/// ```
 #[pyfunction]
 #[pyo3(signature = (corpus_dir, out = None, *, dict = None, config = None, cpu = false,
                     seed = None, no_tri = false, no_lda = false, no_sat = false,
                     no_pron_probs = false, sat_rounds = None, no_subset = false,
-                    position_dependent = true, work_dir = None))]
+                    position_dependent = true, work_dir = None, progress = None,
+                    quiet = false))]
 #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
 pub fn train(
     py: Python<'_>,
@@ -39,6 +60,8 @@ pub fn train(
     no_subset: bool,
     position_dependent: bool,
     work_dir: Option<PathBuf>,
+    progress: Option<&Bound<'_, PyAny>>,
+    quiet: bool,
 ) -> PyResult<Model> {
     let mut cfg = match config {
         Some(obj) => train_config(obj)?,
@@ -91,6 +114,38 @@ pub fn train(
     py.check_signals()?;
     let device = if cpu { Device::cpu() } else { Device::auto() };
 
+    // The callback is invoked from the training threads, which have no GIL of their own.
+    // A raising callback must not abort a run that may already be many minutes in, so its
+    // error is reported as unraisable and swallowed.
+    let sink: Option<viter_train::pipeline::ProgressSink> = progress.map(|cb| {
+        let cb: Py<PyAny> = cb.clone().unbind();
+        Arc::new(move |ev: &viter_train::pipeline::ProgressEvent| {
+            Python::attach(|py| {
+                let call = || -> PyResult<()> {
+                    let info = pyo3::types::PyDict::new(py);
+                    info.set_item("done", ev.done)?;
+                    info.set_item("total", ev.total)?;
+                    info.set_item("fraction", ev.fraction)?;
+                    info.set_item("elapsed", ev.elapsed.as_secs_f64())?;
+                    info.set_item("eta", ev.eta.map(|d| d.as_secs_f64()))?;
+                    info.set_item("stage", ev.stage.as_str())?;
+                    info.set_item("step", ev.step.as_str())?;
+                    info.set_item("mismatches", ev.mismatches)?;
+                    cb.call1(py, (info,))?;
+                    Ok(())
+                };
+                if let Err(e) = call() {
+                    e.write_unraisable(py, None);
+                }
+            });
+        }) as viter_train::pipeline::ProgressSink
+    });
+    let train_opts = viter_train::pipeline::TrainOptions {
+        final_alignment: false,
+        progress: sink,
+        quiet,
+    };
+
     let trained = py_err(py.detach(|| {
         let corpus = viter_io::corpus::scan(&corpus_dir, &opts)
             .with_context(|| format!("failed to scan corpus at {}", corpus_dir.display()))?;
@@ -100,14 +155,8 @@ pub fn train(
              transcripts)",
             corpus_dir.display()
         );
-        viter_train::pipeline::train_with(
-            &corpus,
-            &cfg,
-            &device,
-            work_dir.as_deref(),
-            &viter_train::pipeline::TrainOptions::default(),
-        )
-        .context("training failed")
+        viter_train::pipeline::train_with(&corpus, &cfg, &device, work_dir.as_deref(), &train_opts)
+            .context("training failed")
     }))?;
     py.check_signals()?;
 

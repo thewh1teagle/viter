@@ -231,9 +231,8 @@ fn run_iterations_impl(
         let wants_hook = hooks.begin_iteration(ctx, iteration)?;
 
         let iter_phase = |what: &'static str| {
-            progress::IterPhase::new(
+            progress::Phase::iter(
                 ctx.progress,
-                stage_name,
                 iteration,
                 plan.num_iterations,
                 what,

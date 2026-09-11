@@ -80,7 +80,7 @@ task wheel {
 # Run the python tests against the freshly built wheel.
 task pytest {
     wheel
-    uv run --with dist/*.whl --with pytest --with numpy pytest tests/python -q
+    sh -c 'uv run --with "$(ls -t dist/*.whl | head -1)" --with pytest --with numpy pytest tests/python -q'
 }
 
 # Parity of a TextGrid folder against MFA's: parity [textgrids].

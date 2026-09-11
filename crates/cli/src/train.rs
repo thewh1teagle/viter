@@ -153,6 +153,7 @@ pub fn run(args: TrainArgs) -> anyhow::Result<()> {
         args.work_dir.as_deref(),
         &viter_train::pipeline::TrainOptions {
             final_alignment: args.out_textgrids.is_some(),
+            ..Default::default()
         },
     )
     .context("training failed")?;
